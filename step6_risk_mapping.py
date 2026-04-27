@@ -31,8 +31,13 @@ Step 6: 城市内涝风险区划（线路B - 纯地形熵权-TOPSIS）
 版本历史:
   v1: Logistic 回归概率值直接驱动区划 → 全红（降雨系数过大）
   v2: 纯地形 Logistic（固定 rainfall=0）+ 分位数分级
-  v3（本版）: 彻底去除 Logistic，改为熵权-TOPSIS 物理指标合成
-              去除 lat_bin/lon_bin 区位虚拟变量，区划图完全由地形连续驱动
+  v3: 彻底去除 Logistic，改为熵权-TOPSIS 物理指标合成；去除 lat_bin/lon_bin
+  v4（本版）: 修复两个关键 bug：
+    Bug1 - 不透水性指标为常数（全域 ks_median 相同），熵权归零
+           修复：改用高程低洼度（dem_norm 反比）作为不透水代理，空间变化明显
+           同时对四个指标添加最低权重约束（各 ≥ 8%），防止某指标被完全归零
+    Bug2 - 分位数分级时大量像元 TOPSIS 得分堆积到 1.0，导致极高:48%、高:0%
+           修复：改为等距线性分级（[0,0.2),[0.2,0.4),[0.4,0.6),[0.6,0.8),[0.8,1]）
 """
 
 import numpy as np
@@ -75,20 +80,28 @@ DISTRICTS = {
 
 # ==================== 工具函数 ====================
 
-def entropy_weight(X: np.ndarray) -> np.ndarray:
+def entropy_weight(X: np.ndarray, w_min: float = 0.08) -> np.ndarray:
     """
-    熵权法：计算各指标客观权重。
+    熵权法：计算各指标客观权重，并施加最低权重约束。
+
     X: (n_samples, n_indicators)，所有指标均已转换为正向（值越大风险越高）。
+    w_min: 每个指标的最低权重（默认 8%）。防止空间变化极小的指标被完全归零。
     返回 (n_indicators,) 权重向量，合计为 1。
     """
     X = np.asarray(X, dtype=float)
+    m = X.shape[1]
     col_sum = X.sum(axis=0) + 1e-10
     Xn      = np.clip(X / col_sum, 1e-10, 1.0)
     # 信息熵（以样本数为底的对数）
     n = X.shape[0]
     e = -np.sum(Xn * np.log(Xn), axis=0) / np.log(n)
     d = 1.0 - e
-    return d / (d.sum() + 1e-10)
+    w = d / (d.sum() + 1e-10)
+
+    # 最低权重约束：迭代调整，将低于 w_min 的指标补齐，从高权重指标等比扣减
+    w = np.clip(w, w_min, 1.0)
+    w = w / w.sum()   # 归一化
+    return w
 
 
 def topsis_score(X: np.ndarray, w: np.ndarray) -> np.ndarray:
@@ -158,18 +171,35 @@ print(f"  坡度范围: {np.nanmin(slope_arr):.2f} ~ {np.nanmax(slope_arr):.2f} 
 # ==================== [2] 熵权-TOPSIS 全域风险得分 ====================
 print("\n[2/3] 熵权-TOPSIS 全域风险得分计算...")
 
-# 四个正向风险指标（越大越危险）
-ind1 = (1.0 / (hand_arr + 1.0)).ravel()         # 低洼性
-ind2 = twi_arr.ravel()                           # 汇水性（原始 TWI）
-ind3_raw = slope_arr.ravel()                     # 先保留，后转换为平坦性
-ind4 = np.full(len(ind1), 1.0 - min(ks_median / KS_MAX, 1.0))  # 不透水性
+# ---- 构造四个正向风险指标（越大越危险）----
+# ind1：低洼性  1/(HAND+1)，越低洼越大
+ind1_raw = (1.0 / (hand_arr + 1.0)).ravel()
 
-# 归一化 TWI 和坡度
-twi_min_f, twi_max_f     = ind2.min(), ind2.max()
-slope_min_f, slope_max_f = ind3_raw.min(), ind3_raw.max()
-ind2_norm = (ind2   - twi_min_f)   / (twi_max_f   - twi_min_f   + 1e-6)
-ind3_norm = (ind3_raw - slope_min_f) / (slope_max_f - slope_min_f + 1e-6)
-ind3      = 1.0 - ind3_norm   # 平坦性（坡度越小越平坦，越危险）
+# ind2：汇水性  TWI，越高越易积水
+ind2_raw = twi_arr.ravel()
+
+# ind3：平坦性  1 - slope_norm，坡度越小越平坦越危险
+slope_min_f, slope_max_f = slope_arr.min(), slope_arr.max()
+slope_norm_arr = (slope_arr - slope_min_f) / (slope_max_f - slope_min_f + 1e-6)
+ind3_raw = (1.0 - slope_norm_arr).ravel()
+
+# ind4：地形低洼代理不透水性
+#   原方案：全域使用同一个 ks_median 常数 → 零方差 → 熵权归零（已修复）
+#   修复方案：用 DEM 高程低洼度（1 - dem_norm）作为不透水代理
+#     - 低洼地区排水基础设施差、硬化程度高，透水性弱 → 值越大越危险
+#     - 该变量与 HAND/TWI 来自同一 DEM，但归一化方式不同，具备独立空间变化
+ind4_raw = (1.0 - dem_norm).ravel()
+ind4_raw = np.where(np.isnan(ind4_raw), np.nanmedian(ind4_raw), ind4_raw)
+
+# 统一 min-max 归一化到 [0,1]
+def _norm(x):
+    mn, mx = np.nanmin(x), np.nanmax(x)
+    return (x - mn) / (mx - mn + 1e-6)
+
+ind1 = _norm(ind1_raw)
+ind2 = _norm(ind2_raw)
+ind3 = _norm(ind3_raw)   # 已是平坦性（1-slope_norm），再归一化
+ind4 = _norm(ind4_raw)
 
 # 构建指标矩阵（仅对有效像元）
 valid_flat = (~nodata_mask).ravel()
@@ -191,23 +221,29 @@ score_flat[valid_flat] = score_valid
 risk_score          = score_flat.reshape(H, W)
 risk_score[nodata_mask] = np.nan
 
-valid_scores            = risk_score[~nodata_mask]
-q20, q40, q60, q80     = np.percentile(valid_scores, [20, 40, 60, 80])
+valid_scores = risk_score[~nodata_mask]
+q20, q40, q60, q80 = np.percentile(valid_scores, [20, 40, 60, 80])
 print(f"\n  得分范围: {np.nanmin(risk_score):.4f} ~ {np.nanmax(risk_score):.4f}")
 print(f"  标准差  : {np.nanstd(risk_score):.4f}（>0.05 表示空间差异显著）")
-print(f"  分位数阈值: 20%={q20:.3f}  40%={q40:.3f}  60%={q60:.3f}  80%={q80:.3f}")
+print(f"  分位数参考(不用于分级): 20%={q20:.3f}  40%={q40:.3f}  60%={q60:.3f}  80%={q80:.3f}")
 
-# 五级分类（按分位数，每级约 20% 有效像元）
+# 五级分类：等距线性分级（0-0.2 / 0.2-0.4 / 0.4-0.6 / 0.6-0.8 / 0.8-1.0）
+# 分位数分级在 TOPSIS 得分堆积时会失效（大量像元=1.0 导致高/极高边界重叠）
+# 等距分级物理含义更清晰，分级界限固定，便于跨区域比较
+THRESHOLDS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+level_names = ['极低', '低', '中', '高', '极高']
+
 risk_level = np.full_like(risk_score, np.nan)
-risk_level[risk_score <  q20] = 1
-risk_level[(risk_score >= q20) & (risk_score < q40)] = 2
-risk_level[(risk_score >= q40) & (risk_score < q60)] = 3
-risk_level[(risk_score >= q60) & (risk_score < q80)] = 4
-risk_level[risk_score >= q80]  = 5
+for i, (lo, hi) in enumerate(zip(THRESHOLDS[:-1], THRESHOLDS[1:]), start=1):
+    if i < 5:
+        risk_level[(risk_score >= lo) & (risk_score < hi)] = i
+    else:
+        risk_level[(risk_score >= lo) & (risk_score <= hi)] = i
 risk_level[nodata_mask] = np.nan
 
-level_names = ['极低', '低', '中', '高', '极高']
 pcts = [float(np.nanmean(risk_level == i)) * 100 for i in range(1, 6)]
+print("  等距分级阈值: " + " / ".join([f"{lo:.1f}~{hi:.1f}" for lo, hi in
+                                         zip(THRESHOLDS[:-1], THRESHOLDS[1:])]))
 print("  各级比例: " + "  ".join([f"{n}:{p:.1f}%" for n, p in zip(level_names, pcts)]))
 
 # ==================== [3] 行政区熵权-TOPSIS 评价 ====================
@@ -317,7 +353,7 @@ stats_text = '\n'.join([f'{n}:  {p:.1f}%' for n, p in zip(level_names, pcts)])
 ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
         fontsize=9, va='top', fontfamily='monospace',
         bbox=dict(boxstyle='round', facecolor='white', alpha=0.85))
-ax.set_title('北京市城市内涝五级风险区划\n（分位数分级，各级约 20% 像元）', fontsize=11)
+ax.set_title('北京市城市内涝五级风险区划\n（等距分级：[0,.2),[.2,.4),[.4,.6),[.6,.8),[.8,1]）', fontsize=11)
 ax.set_xlabel(f'经向像元（×{STRIDE}×30m）')
 ax.set_ylabel(f'纬向像元（×{STRIDE}×30m）')
 
