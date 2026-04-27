@@ -14,14 +14,17 @@ Step 3: 前期土壤水分提取
   - soil_deficit = theta_s - SM_prev（土壤吸水潜力，越大越容易入渗，越小越易积水）
   - 旬划分：1~10日=上旬(1)，11~20日=中旬(2)，21~31日=下旬(3)
 
-注意：
-  - SM的坐标系需确认是否与DEM一致（均为EPSG:4326）
-  - 缺失SM用全市同旬中位数填充，不影响大样本统计
+坐标系修复（v2）:
+  - SM 文件存放于 Processed_Decadal_SM_UTM50N 目录，文件实际投影为 UTM Zone 50N (EPSG:32650)
+  - 标签点位坐标为 WGS84 经纬度（EPSG:4326）
+  - 采样前自动检测 TIF 的 CRS，若为 EPSG:32650 则先将经纬度转换为 UTM50N 再采样
+  - 若 CRS 未知则回退到经纬度直接采样（保持向后兼容）
 """
 
 import numpy as np
 import pandas as pd
 import rasterio
+from pyproj import Transformer
 import os, warnings
 warnings.filterwarnings('ignore')
 
@@ -49,21 +52,45 @@ def get_sm_filepath(year, month, dekad):
         f'SM_{year}_{month:02d}_{dekad}_Mean_30m.tif'
     )
 
+# 经纬度 → UTM50N 转换器（采样时按需使用）
+_wgs84_to_utm50n = Transformer.from_crs("EPSG:4326", "EPSG:32650", always_xy=True)
+
+
 def sample_tif_at_points(tif_path, lats, lons):
-    """rasterio最近邻采样"""
+    """
+    rasterio 最近邻采样，自动适配 SM 文件的坐标系。
+
+    - 若 TIF 为 EPSG:32650（UTM50N）：先将 WGS84 经纬度转换为 UTM50N 坐标再采样。
+    - 若 TIF 为 EPSG:4326 或 CRS 未知：直接用经纬度采样（向后兼容）。
+    """
     if not os.path.exists(tif_path):
         return np.full(len(lats), np.nan)
+
     with rasterio.open(tif_path) as src:
-        nodata, data = src.nodata, src.read(1)
-        h, w = src.height, src.width
+        nodata = src.nodata
+        data   = src.read(1)
+        h, w   = src.height, src.width
+
+        # 判断坐标系
+        epsg = src.crs.to_epsg() if src.crs else None
+        use_utm = (epsg == 32650)
+
+        if use_utm:
+            # 批量转换：经度在前(always_xy)
+            xs, ys = _wgs84_to_utm50n.transform(lons, lats)
+        else:
+            xs, ys = lons, lats  # 直接使用经纬度
+
         vals = []
-        for lat, lon in zip(lats, lons):
-            r, c = src.index(lon, lat)
-            r, c = max(0,min(int(r),h-1)), max(0,min(int(c),w-1))
+        for x, y in zip(xs, ys):
+            r, c = src.index(x, y)
+            r = max(0, min(int(r), h - 1))
+            c = max(0, min(int(c), w - 1))
             v = float(data[r, c])
             if nodata is not None and abs(v - nodata) < 1e-3:
                 v = np.nan
             vals.append(v)
+
     return np.array(vals)
 
 # ==================== 读取标签和点位 ====================

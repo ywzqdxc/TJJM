@@ -1,6 +1,20 @@
 """
-Step 4: 构造建模数据集（最终版）
-路径已更新为实际目录结构
+Step 4: 构造建模数据集（v2 - 修复 RE 计算）
+============================================
+修复点（来自 fix_RE_and_rebuild.py）：
+  原始 RE 公式将降雨持续时间设为 6 小时，导致 Ks×6h 远大于日降雨量，
+  RE 几乎全为 0，失去物理区分度。
+
+  修复方案：混合城市径流模型
+    perv_ratio = min(Ks / 140, 1)          透水面比例
+    不透水面产流 = max(rainfall - 2mm, 0) × (1 - perv_ratio)
+    透水面产流   = max(rainfall - Ks × wetness_factor × 1h, 0) × perv_ratio
+    RE = 两者之和
+
+  其中 wetness_factor = max(0.3, deficit / 0.3)，土壤越湿入渗能力越弱。
+  北京短历时暴雨等效降雨历时取 1 小时，更符合实际。
+
+  注：此版本同时过滤了 data_flag='MISSING' 的降雨记录，避免缺失数据污染训练集。
 """
 
 import numpy as np
@@ -64,17 +78,45 @@ print(f"  缺失检查 — 降雨:{pos['rainfall_mm'].isna().sum()} "
       f"地形:{pos['dem_m'].isna().sum()} "
       f"SM:{pos['SM_prev'].isna().sum()}")
 
-# ==================== [3] 计算超渗雨量 RE ====================
-RAIN_HOURS = 6.0
+# ==================== [3] 计算超渗雨量 RE（修复版混合城市径流模型） ====================
+KS_MAX = 140.0   # 北京土壤 Ks 最大值（mm/h），用于归一化透水面比例
+
 
 def calc_RE(row):
-    rain_v   = row.get('rainfall_mm', 0) or 0
-    ks       = row.get('ks_mmh', 1.0)   or 1.0
-    deficit  = row.get('soil_deficit', 0.2) or 0.2
-    psi      = abs(row.get('psi_cm', 15.0) or 15.0)
-    deficit_factor  = 1 + psi * deficit / 30.0
-    effective_infil = ks * RAIN_HOURS * deficit_factor
-    return round(max(0.0, rain_v - effective_infil), 3)
+    """
+    混合城市径流模型（替代原 Green-Ampt 6小时版本）
+
+    - perv_ratio：透水面比例（由 Ks/140 归一化）
+    - 不透水面：扣除初损 2mm 后全部产流
+    - 透水面：Green-Ampt 1 小时等效，考虑前期土壤湿润程度修正
+    """
+    rain_v  = float(row.get('rainfall_mm', 0) or 0)
+    ks      = float(row.get('ks_mmh', 10.0)  or 10.0)
+    deficit = float(row.get('soil_deficit', 0.2) or 0.2)
+
+    if rain_v <= 0:
+        return 0.0
+
+    perv_ratio   = min(ks / KS_MAX, 1.0)
+    imperv_ratio = 1.0 - perv_ratio
+
+    # 不透水面产流（初损 2mm）
+    imperv_runoff = max(0.0, rain_v - 2.0) * imperv_ratio
+
+    # 透水面超渗产流（1 小时等效，土壤湿润修正）
+    wetness_factor = max(0.3, deficit / 0.3)
+    f_eff          = ks * wetness_factor          # 有效入渗速率（mm/h）
+    perv_runoff    = max(0.0, rain_v - f_eff) * perv_ratio
+
+    return round(imperv_runoff + perv_runoff, 3)
+
+# 过滤降雨缺失记录（data_flag='MISSING' 的行不进入训练集）
+before_filter = len(pos)
+if 'data_flag' in pos.columns:
+    pos = pos[pos['data_flag'] != 'MISSING'].reset_index(drop=True)
+    dropped = before_filter - len(pos)
+    if dropped > 0:
+        print(f"  过滤 MISSING 降雨记录: {dropped} 条")
 
 pos['RE_mm'] = pos.apply(calc_RE, axis=1)
 re_pos_ratio = (pos['RE_mm'] > 0).mean() * 100
@@ -210,7 +252,7 @@ n_pos = (dataset['label']==1).sum()
 n_neg = (dataset['label']==0).sum()
 
 print(f"\n{'='*55}")
-print(f"✅ 建模数据集构造完成")
+print(f"✅ 建模数据集构造完��")
 print(f"{'='*55}")
 print(f"  总样本量  : {len(dataset)}")
 print(f"  正样本(1) : {n_pos}  负样本(0): {n_neg}  比例 1:{n_neg/n_pos:.1f}")
