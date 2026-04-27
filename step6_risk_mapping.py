@@ -178,7 +178,7 @@ ind1_raw = (1.0 / (hand_arr + 1.0)).ravel()
 # ind2：汇水性  TWI，越高越易积水
 ind2_raw = twi_arr.ravel()
 
-# ind3：平坦性  1 - slope_norm，坡度越小越平坦越危险
+# ind3：平��性  1 - slope_norm，坡度越小越平坦越危险
 slope_min_f, slope_max_f = slope_arr.min(), slope_arr.max()
 slope_norm_arr = (slope_arr - slope_min_f) / (slope_max_f - slope_min_f + 1e-6)
 ind3_raw = (1.0 - slope_norm_arr).ravel()
@@ -203,13 +203,13 @@ ind4 = _norm(ind4_raw)
 
 # 构建指标矩阵（仅对有效像元）
 valid_flat = (~nodata_mask).ravel()
-indicator_mat = np.column_stack([ind1, ind2_norm, ind3, ind4])
+indicator_mat = np.column_stack([ind1, ind2, ind3, ind4])
 valid_X       = indicator_mat[valid_flat]
 
 # 熵权法计算权重
 w = entropy_weight(valid_X)
 print(f"  熵权权重:")
-for name, wi in zip(['低洼性(1/HAND+1)', '汇水性(TWI)', '平坦性(1-slope)', '不透水性(1-Ks)'], w):
+for name, wi in zip(['低洼性(1/HAND+1)', '汇水性(TWI)', '平坦性(1-slope)', '低洼代理不透水(1-dem_norm)'], w):
     print(f"    {name}: {wi:.4f}")
 
 # TOPSIS 得分
