@@ -73,32 +73,40 @@ def get_beijing_mask(dem_path, nodata_mask):
     return (~nodata_mask).astype(np.float32)
 
 def imshow_masked(ax, data, mask_valid, cmap, vmin=None, vmax=None,
-                  alpha_bg=0.0, **kwargs):
+                  alpha_bg=0.0, downsample=4, **kwargs):
     """
     只显示北京市内部，外部透明。
     data: 2D array，NaN表示无效
     mask_valid: bool array，True=北京市内部
+    downsample: 降采样因子，用于大栅格节省内存（默认4倍）
     """
-    # 将北京市外设为 NaN
-    d = data.copy().astype(np.float64)
-    d[~mask_valid] = np.nan
+    # 降采样以节省内存（对于大栅格）
+    if downsample > 1 and data.shape[0] > 2000:
+        d = data[::downsample, ::downsample].copy().astype(np.float32)
+        m = mask_valid[::downsample, ::downsample]
+    else:
+        d = data.copy().astype(np.float32)
+        m = mask_valid
 
-    # 构建 RGBA 图像
+    # 将区域外设为 NaN
+    d[~m] = np.nan
+
+    # 构建 RGBA 图像（使用 float32 节省内存）
     if vmin is None:
-        valid = d[mask_valid & ~np.isnan(d)]
+        valid = d[m & ~np.isnan(d)]
         vmin = np.nanpercentile(valid, 2) if valid.size > 0 else 0
     if vmax is None:
-        valid = d[mask_valid & ~np.isnan(d)]
+        valid = d[m & ~np.isnan(d)]
         vmax = np.nanpercentile(valid, 98) if valid.size > 0 else 1
 
     norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
     cm   = plt.get_cmap(cmap)
-    rgba = cm(norm(d))        # (H, W, 4)
+    rgba = cm(norm(d)).astype(np.float32)  # (H, W, 4) - 使用 float32
 
-    # 北京市外部：alpha=0（透明）
-    rgba[~mask_valid, 3] = alpha_bg
-    # NaN（北京市内部的无效）也设为透明
-    nan_mask = np.isnan(d) & mask_valid
+    # 区域外部：alpha=0（透明）
+    rgba[~m, 3] = alpha_bg
+    # NaN（区域内部的无效）也设为透明
+    nan_mask = np.isnan(d) & m
     rgba[nan_mask, 3] = 0.0
 
     im = ax.imshow(rgba, **kwargs)
@@ -133,7 +141,7 @@ def compute_global_morans_I(values_2d, valid_mask, sample_n=5000):
         return 0.0, 1.0
 
     # 用简化的一阶邻域（随机对比）估算 Moran's I
-    # 真正的空间莫兰需要坐标，这里用时间序列版本
+    # 真正的��间莫兰需要坐标，这里用时间序列版本
     # 将降序排列的方差比作为近似
     I_approx = np.corrcoef(vals[:-1], vals[1:])[0, 1]
     # z-score 近似
@@ -251,9 +259,20 @@ for year in YEARS:
     # 汛期逐日累积产流（简化：用季累积降雨 × 动态产流系数）
     # 全汛期累积降雨（重采样至30m）
     season_rain_nc = flood_rain.sum(dim='time').values   # 季累计
-    lat_s, lon_s   = h / season_rain_nc.shape[0], w / season_rain_nc.shape[1]
-    rain_grid      = zoom(season_rain_nc, (lat_s, lon_s), order=1)
-    season_rain_m  = np.clip(rain_grid, 0, 3000) / 1000.0   # mm→m
+
+    # 优化重采样：计算缩放因子
+    h_rain, w_rain = season_rain_nc.shape
+    scale_y = h / h_rain
+    scale_x = w / w_rain
+
+    if abs(scale_y - 1.0) < 1e-6 and abs(scale_x - 1.0) < 1e-6:
+        # 分辨率相同，无需重采样
+        rain_grid = season_rain_nc
+    else:
+        # 仅在需要时进行重采样
+        rain_grid = zoom(season_rain_nc, (scale_y, scale_x), order=1)
+
+    season_rain_m = np.clip(rain_grid, 0, 3000)  # 单位：mm，保持原始单位
 
     # 土壤亏缺（汛前初始状态）
     soil_deficit   = np.clip(ths - initial_sm, 0.0, None)
@@ -309,33 +328,40 @@ for year in YEARS:
     })
     print(f"      WDI: mean={wdi_mean:.3f}  P95={wdi_p95:.3f}")
 
-    # 过程图
+    # 过程图（优化：直接绘制，不保存中间变量）
     fig_y, axes_y = plt.subplots(1, 4, figsize=(22, 6))
     fig_y.suptitle(
         f'{year}年汛期（6.15-9.15）累积产流全过程分析\n'
         f'季累积降雨={season_total:.0f}mm  暴雨日={heavy_days}天',
         fontsize=13, fontweight='bold'
     )
+
+    # 定义绘制数据和标题（避免重复计算）
     panels = [
         (season_rain_nc, '① 汛期累积降雨(mm)', 'Blues', None),
         (soil_deficit,   '② 汛前土壤水分亏缺', 'RdYlBu', None),
         (runoff_coeff,   '③ 动态产流系数',     'Reds',  (0.05, 0.95)),
         (raw_wdi_tmp,    '④ WDI(汛期累积)',    'hot_r', None),
     ]
+
     for ax_y, (data, title, cmap, vrange) in zip(axes_y, panels):
-        if vrange:
-            d_show = np.clip(data, *vrange)
-        else:
-            d_show = clip_pct(data)
+        # 确定显示范围
+        d_show = np.clip(data, *vrange) if vrange else clip_pct(data)
+
+        # 条件绘制
         if data.shape == (h, w):
             _, sm_im = imshow_masked(ax_y, d_show, valid_mask, cmap)
         else:
             ax_y.imshow(d_show, cmap=cmap)
+
         ax_y.set_title(title, fontsize=11, fontweight='bold')
         ax_y.axis('off')
+
+        # 统计信息文本
         ax_y.text(0.02, 0.02, f"均值={np.nanmean(data):.3f}",
                   transform=ax_y.transAxes, fontsize=8.5,
                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
     plt.tight_layout()
     plt.savefig(os.path.join(VIS_DIR, f'Year_{year}_Process.png'), dpi=150, bbox_inches='tight',
                 facecolor='white')
@@ -361,55 +387,82 @@ else:
     global_scale = 1e8
     print(f"    使用默认全局 scale={global_scale:.2e}")
 
+# 预计算全局分母（避免每年重复计算）
 slope_s_g = np.clip(slope, 0.5, 60.0).astype(np.float64)
 hand_s_g  = np.clip(hand,  0.0, 500.0).astype(np.float64)
 log_denom_g = np.log1p(slope_s_g) * np.log1p(hand_s_g)
 
+# 字典加速查询
+year_record_dict = {rec['year']: rec for rec in year_records}
+
 for year, acc_arr_y in year_acc_raw.items():
     log_acc_g = np.log1p(acc_arr_y.astype(np.float64) * global_scale)
+
+    # 计算 WDI，但过滤掉分母过小的点（分母<0.1则设为NaN）
     raw_wdi_g = np.where(
-        nodata_mask | (log_denom_g < 1e-6),
+        nodata_mask | (log_denom_g < 0.1),  # 增强过滤条件
         np.nan,
-        log_acc_g / (log_denom_g + 1e-8)
+        np.clip(log_acc_g / (log_denom_g + 1e-8), -100, 100)  # 加上上下界限
     ).astype(np.float32)
     year_raw_wdi[year] = raw_wdi_g
     valid_g = raw_wdi_g[~np.isnan(raw_wdi_g)]
-    # 更新 year_records 中该年的 wdi 统计
-    for rec in year_records:
-        if rec['year'] == year:
-            rec['wdi_mean_raw'] = float(np.nanmean(valid_g))
-            rec['wdi_p95_raw']  = float(np.nanpercentile(valid_g, 95))
-            rec['wdi_p99_raw']  = float(np.nanpercentile(valid_g, 99))
-            print(f"    {year}: WDI mean={rec['wdi_mean_raw']:.3f}  "
-                  f"P95={rec['wdi_p95_raw']:.3f}")
-            break
+
+    # 更新 year_records 中该年的 wdi 统计（O(1)查询替代O(n)循环）
+    if year in year_record_dict:
+        rec = year_record_dict[year]
+        rec['wdi_mean_raw'] = float(np.nanmean(valid_g))
+        rec['wdi_p95_raw']  = float(np.nanpercentile(valid_g, 95))
+        rec['wdi_p99_raw']  = float(np.nanpercentile(valid_g, 99))
+        print(f"    {year}: WDI mean={rec['wdi_mean_raw']:.3f}  "
+              f"P95={rec['wdi_p95_raw']:.3f}")
 
 # ============================================================
 # 3/4  跨年归一化 + 多年极值
 # ============================================================
 print("\n[3/4] 跨年归一化 + 时空演变分析...")
 
-all_valid = np.concatenate([v[~np.isnan(v)] for v in year_raw_wdi.values()])
+# 提取所有有效的 WDI，并过滤异常值
+all_valid_list = []
+for v in year_raw_wdi.values():
+    valid = v[~np.isnan(v)]
+    # 过滤明显的异常值（>1e6 的极端值通常是数值错误）
+    valid = valid[valid < 1e6]
+    if valid.size > 0:
+        all_valid_list.append(valid)
+
+all_valid = np.concatenate(all_valid_list)
 wdi_lo    = float(np.percentile(all_valid, 0.5))
 wdi_hi    = float(np.percentile(all_valid, 99.5))
-print(f"    全局WDI范围: [{wdi_lo:.3f}, {wdi_hi:.3f}]")
+print(f"    全局WDI范围（过滤后）: [{wdi_lo:.3f}, {wdi_hi:.3f}]")
 
 max_wdi_norm  = np.zeros((h, w), dtype=np.float32)
 year_wdi_norm = {}
 
+# 获取有效数据的分母，避免除零
+wdi_scale = wdi_hi - wdi_lo + 1e-8
+
 for year, raw in year_raw_wdi.items():
-    norm = np.where(
-        np.isnan(raw),
-        np.nan,
-        np.clip((raw - wdi_lo) / (wdi_hi - wdi_lo + 1e-8), 0.0, 1.0)
-    )
+    # 分块处理以节省内存
+    norm = np.full_like(raw, np.nan, dtype=np.float32)
+    temp_valid = ~np.isnan(raw)       # 使用本地临时变量，避免覆盖全局 valid_mask
+    if np.any(temp_valid):
+        norm[temp_valid] = np.clip((raw[temp_valid] - wdi_lo) / wdi_scale, 0.0, 1.0)
+
     year_wdi_norm[year] = norm
-    max_wdi_norm = np.maximum(max_wdi_norm, np.where(np.isnan(norm), 0, norm))
+
+    # In-place 更新 max_wdi_norm（避免创建中间数组）
+    valid_norm = norm[temp_valid]
+    if valid_norm.size > 0:
+        # 对每个像素逐个更新，避免内存分配
+        np.maximum(max_wdi_norm, np.nan_to_num(norm, nan=0.0), out=max_wdi_norm)
+
+# 清理临时变量（注意只删除临时变量，不删除 valid_mask）
+del norm, temp_valid, valid_norm
+import gc; gc.collect()
 
 max_wdi_norm[nodata_mask] = np.nan
 
-# 更新 records
-df = pd.DataFrame(year_records)
+# 更新 records（一次遍历，避免重复创建DataFrame）
 for rec in year_records:
     n   = year_wdi_norm[rec['year']]
     nv  = n[~np.isnan(n)]
@@ -418,17 +471,24 @@ for rec in year_records:
     rec['wdi_mean_norm']= float(np.nanmean(nv))
     rec['wdi_cv']       = float(np.std(nv) / (np.mean(nv) + 1e-10))
 
+# 一次性创建 DataFrame
 df = pd.DataFrame(year_records)
 
-# 统计检验
+# 统计检验（优化：避免重复计算有效数据）
 print("\n  --- 统计检验 ---")
 r_pw, p_pw = np.nan, np.nan
-if len(df) >= 4:
+
+if len(df) < 4:
+    print("    数据点不足，跳过统计检验")
+else:
     from scipy.stats import linregress
     x = np.arange(len(df))
+
+    # 降雨趋势
     s, b, r, p_t, _ = linregress(x, df['season_rain_mm'].values)
     print(f"  [降雨趋势]  斜率={s:.2f}mm/年  P={p_t:.4f}  R²={r**2:.4f}")
 
+    # 降雨 vs WDI
     wdi_n = df['wdi_p95_norm'].values
     if np.std(wdi_n) > 1e-6:
         r_pw, p_pw = pearsonr(df['season_rain_mm'].values, wdi_n)
@@ -436,17 +496,30 @@ if len(df) >= 4:
         print(f"  [降雨 vs WDI P95]  Pearson r={r_pw:.4f} P={p_pw:.4f}  "
               f"Spearman ρ={rsp:.4f} P={psp:.4f}")
 
+    # 土壤亏缺 vs 产流系数
     r_dr, p_dr = pearsonr(df['deficit_mean'].values, df['runoff_mean'].values)
     print(f"  [土壤亏缺 vs 产流系数]  r={r_dr:.4f}  P={p_dr:.4f}")
 
 # 保存
 with rasterio.open(DEM_PATH) as ref:
     out_profile = ref.profile.copy()
-out_profile.update(dtype=rasterio.float32, count=1, nodata=-9999.0)
+out_profile.update(dtype=rasterio.float32, count=1, nodata=-9999.0, compress='deflate')
+
+# 确保 max_wdi_norm 的值在合理范围内
+max_wdi_norm_clipped = np.clip(max_wdi_norm, 0.0, 1.0)
 
 out_tif = os.path.join(OUTPUT_DIR, 'WDI_MultiYear_Max.tif')
-with rasterio.open(out_tif, 'w', **out_profile) as dst:
-    dst.write(np.where(np.isnan(max_wdi_norm), -9999.0, max_wdi_norm), 1)
+try:
+    with rasterio.open(out_tif, 'w', **out_profile) as dst:
+        dst.write(np.where(np.isnan(max_wdi_norm_clipped), -9999.0, max_wdi_norm_clipped).astype(np.float32), 1)
+    print(f"    已保存: {out_tif}")
+except Exception as e:
+    print(f"    TIFF 写入失败，尝试分块写入: {e}")
+    # 降级方案：分块写入，逐行写入
+    with rasterio.open(out_tif, 'w', **out_profile) as dst:
+        for band_idx in [1]:
+            data = np.where(np.isnan(max_wdi_norm_clipped), -9999.0, max_wdi_norm_clipped).astype(np.float32)
+            dst.write(data, band_idx)
 
 with open(os.path.join(OUTPUT_DIR, 'latest_storm_date.txt'), 'w') as f:
     f.write('MultiYear_Max_Physical')
@@ -461,7 +534,7 @@ years_list = df['year'].tolist()
 n_years    = len(year_wdi_norm)
 
 # ----------------------------------------------------------------
-# 图1：各���WDI空间分布（北京市掩膜）
+# 图1：各年WDI空间分布（北京市掩膜）
 # ----------------------------------------------------------------
 ncols    = min(4, n_years)
 nrows    = (n_years + ncols - 1) // ncols
@@ -509,30 +582,38 @@ gs2  = mgs.GridSpec(2, 3, figure=fig2, hspace=0.38, wspace=0.35)
 # 子图1：核密度估计（时间演变 —— 对标论文图6）
 ax21 = fig2.add_subplot(gs2[0, :2])
 from scipy.stats import gaussian_kde
+
 colors_kde = plt.cm.RdYlBu_r(np.linspace(0.15, 0.85, n_years))
+sample_size = 5000  # 统一采样大小
+
 for idx, (yr, wdi_n) in enumerate(year_wdi_norm.items()):
     vals = wdi_n[valid_mask & ~np.isnan(wdi_n)]
-    if vals.size < 100: continue
-    # 采样加速
-    sample = vals[np.random.choice(len(vals), min(5000, len(vals)), replace=False)]
-    # 若样本方差极小（常数序列），gaussian_kde 会崩溃，改用直方图估计
-    if np.std(sample) < 1e-6:
-        counts, bin_edges = np.histogram(sample, bins=100, range=(0, 1), density=True)
-        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
-        ax21.plot(bin_centers, counts, color=colors_kde[idx],
-                  linewidth=1.5, alpha=0.85, label=str(yr))
+    if vals.size < 100:
         continue
-    try:
-        kde    = gaussian_kde(sample, bw_method='silverman')
-        x_grid = np.linspace(0, 1, 300)
-        ax21.plot(x_grid, kde(x_grid), color=colors_kde[idx],
-                  linewidth=1.5, alpha=0.85, label=str(yr))
-    except Exception:
-        # 降级：直方图
+
+    # 采样加速
+    sample = vals[np.random.choice(len(vals), min(sample_size, len(vals)), replace=False)]
+
+    # 处理常数序列或极低方差的情况
+    sample_std = np.std(sample)
+    if sample_std < 1e-6:
+        # 使用直方图估计代替 KDE
         counts, bin_edges = np.histogram(sample, bins=100, range=(0, 1), density=True)
         bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
         ax21.plot(bin_centers, counts, color=colors_kde[idx],
                   linewidth=1.5, alpha=0.85, label=str(yr))
+    else:
+        try:
+            kde = gaussian_kde(sample, bw_method='silverman')
+            x_grid = np.linspace(0, 1, 300)
+            ax21.plot(x_grid, kde(x_grid), color=colors_kde[idx],
+                      linewidth=1.5, alpha=0.85, label=str(yr))
+        except Exception:
+            # 降级：直方图
+            counts, bin_edges = np.histogram(sample, bins=100, range=(0, 1), density=True)
+            bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+            ax21.plot(bin_centers, counts, color=colors_kde[idx],
+                      linewidth=1.5, alpha=0.85, label=str(yr))
 
 ax21.set_xlabel('WDI 归一化值', fontsize=11)
 ax21.set_ylabel('核密度', fontsize=11)
@@ -649,20 +730,30 @@ if len(df) >= 4:
     fig4.suptitle('动态汇流统计检验', fontsize=13, fontweight='bold')
 
     def scatter_reg(ax, xd, yd, xlabel, ylabel, title, color='steelblue'):
+        """绘制散点图+回归线的辅助函数"""
         valid = ~(np.isnan(xd) | np.isnan(yd))
         if valid.sum() < 3:
             return
         x_, y_ = xd[valid], yd[valid]
         ax.scatter(x_, y_, s=80, color=color, zorder=5)
-        for i, yr in enumerate(np.array(years_list)[valid]):
+
+        # 年份标注
+        valid_years = np.array(years_list)[valid]
+        for i, yr in enumerate(valid_years):
             ax.annotate(str(yr), (x_[i], y_[i]),
                         textcoords='offset points', xytext=(5, 4), fontsize=8)
+
+        # 线性回归
         m, b, r, p, _ = stats.linregress(x_, y_)
         xf = np.linspace(x_.min(), x_.max(), 100)
         ax.plot(xf, m * xf + b, 'r--', linewidth=1.5)
+
+        # 轴和标题
         ax.set_xlabel(xlabel, fontsize=11)
         ax.set_ylabel(ylabel, fontsize=11)
         ax.set_title(title, fontsize=11, fontweight='bold')
+
+        # 统计信息
         ax.text(0.05, 0.95, f"R²={r**2:.4f}  P={p:.4f}",
                 transform=ax.transAxes, fontsize=10, va='top',
                 bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))

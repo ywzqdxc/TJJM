@@ -85,16 +85,12 @@ def natural_breaks(values, n_classes=5):
     sorted_v = np.sort(values)
     n        = len(sorted_v)
     if n < n_classes * 2:
-        # 样本不足时退化为等距
         return np.linspace(sorted_v.min(), sorted_v.max(), n_classes + 1)
 
-    # 使用 k-means 思路的快速近似
-    # 初始断点：等距
     breaks = np.quantile(sorted_v, np.linspace(0, 1, n_classes + 1))
 
     for _ in range(50):
         old_breaks = breaks.copy()
-        # 每个类的均值
         labels = np.digitize(sorted_v, breaks[1:-1])
         new_breaks = [sorted_v.min()]
         for k in range(n_classes):
@@ -287,19 +283,39 @@ for i, name in enumerate(LEVEL_NAMES, 1):
     pcts.append(pct)
     print(f"  {name}: {pct:.2f}%  (断裂区间: [{breaks[i-1]:.4f}, {breaks[i]:.4f}])")
 
-# 稳健性分析
-print("\n  --- 稳健性（±10% 权重扰动，27组）---")
-score_perturb = []
+# ============================================================
+# 稳健性分析（采样版，避免内存溢出）
+# ============================================================
+print("\n  --- 稳健性（权重±10%，27组，2%采样）---")
+
+# 随机采样2%有效像素用于稳健性检验
+np.random.seed(42)
+sample_rate = 0.02
+n_sample = int(n_valid * sample_rate)
+sample_indices = np.random.choice(n_valid, size=n_sample, replace=False)
+X_sample = X[sample_indices]
+
+score_perturb_list = []
 for dw0, dw1, dw2 in iterproduct([-0.1, 0, 0.1], repeat=3):
     wp = np.clip(w + np.array([dw0, dw1, dw2]) * 0.1, 0, 1)
     wp /= (wp.sum() + 1e-10)
-    sc, _ = topsis(X, wp)
-    score_perturb.append(sc)
-score_perturb = np.array(score_perturb)
-std_rob   = score_perturb.std(axis=0)
-range_rob = score_perturb.max(axis=0) - score_perturb.min(axis=0)
-print(f"  得分Std均值={std_rob.mean():.5f}  极差均值={range_rob.mean():.5f}")
-print(f"  → {'模型稳健 ✓' if std_rob.mean() < 0.05 else '⚠️ 对权重较敏感'}")
+    sc_sample, _ = topsis(X_sample, wp)
+    score_perturb_list.append(sc_sample)
+
+score_perturb = np.array(score_perturb_list)  # 27 × 采样点数 ≈ 90MB
+
+# 用采样结果估算全局稳健性
+std_rob_sample = score_perturb.std(axis=0)
+range_rob_sample = score_perturb.max(axis=0) - score_perturb.min(axis=0)
+print(f"  得分Std均值(采样估算)={std_rob_sample.mean():.5f}  极差均值={range_rob_sample.mean():.5f}")
+print(f"  → {'模型稳健 ✓' if std_rob_sample.mean() < 0.05 else '⚠️ 对权重较敏感'}")
+
+# 为后续可视化准备：还原到全分辨率（用采样均值填充）
+std_rob = np.zeros(n_valid)
+std_rob[sample_indices] = std_rob_sample
+unsampled = np.setdiff1d(np.arange(n_valid), sample_indices)
+if len(unsampled) > 0:
+    std_rob[unsampled] = std_rob_sample.mean()
 
 # Kruskal-Wallis
 groups_kw = [score[risk_level_v == i] for i in range(1, 6)
@@ -389,7 +405,7 @@ cb3 = plt.colorbar(sm3, ax=ax3, shrink=0.75, pad=0.02)
 cb3.set_label('TOPSIS 风险得分 [0,1]', fontsize=10)
 ax3.text(0.02, 0.02,
          f"权重: WDI={w[0]:.3f} / 低洼={w[1]:.3f} / 平坦={w[2]:.3f}\n"
-         f"稳健性Std均值: {std_rob.mean():.5f}",
+         f"稳健性Std均值: {std_rob_sample.mean():.5f}",
          transform=ax3.transAxes, fontsize=10,
          bbox=dict(boxstyle='round', facecolor='white', alpha=0.88))
 plt.tight_layout()
@@ -409,7 +425,6 @@ imshow_categorical(ax4a, risk_level_2d, valid_mask, cmap5, norm5)
 ax4a.set_title('北京市城市内涝五级风险区划\n（最佳自然断裂法分级）', fontsize=12, fontweight='bold')
 ax4a.axis('off')
 
-# 手动图例（替代colorbar）
 legend_patches = [mpatches.Patch(color=c, label=f'{n}  {p:.1f}%')
                   for c, n, p in zip(LEVEL_COLORS, LEVEL_NAMES, pcts) if p > 0]
 ax4a.legend(handles=legend_patches, loc='lower right', fontsize=9, framealpha=0.9)
@@ -471,23 +486,25 @@ save(fig5, 'Step3_05_ScoreDistribution.png')
 # 图6：稳健性分析
 # ----------------------------------------------------------------
 fig6, axes6 = plt.subplots(1, 2, figsize=(14, 6), facecolor='white')
-fig6.suptitle('模型稳健性分析（权重±10%，27组场景）', fontsize=13, fontweight='bold')
+fig6.suptitle('模型稳健性分析（权重±10%，27组，2%采样）', fontsize=13, fontweight='bold')
 
-std_2d = np.full(slope.shape, np.nan)
-std_2d[valid_mask] = std_rob
-sm6 = imshow_masked(axes6[0], std_2d, valid_mask, 'Oranges')
-axes6[0].set_title('得分标准差空间分布\n（越高=对权重越敏感）', fontsize=11, fontweight='bold')
+std_2d_full = np.full(slope.shape, np.nan)
+std_2d_full[valid_mask] = std_rob
+
+sm6 = imshow_masked(axes6[0], std_2d_full, valid_mask, 'Oranges')
+axes6[0].set_title('得分标准差空间分布\n（2%采样+均值填充）', fontsize=11, fontweight='bold')
 axes6[0].axis('off')
 plt.colorbar(sm6, ax=axes6[0], shrink=0.85, label='Std')
-axes6[0].text(0.02, 0.02, f"均值={std_rob.mean():.5f}",
+axes6[0].text(0.02, 0.02, f"采样Std均值={std_rob_sample.mean():.5f}",
               transform=axes6[0].transAxes, fontsize=9,
               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
 scene_means = score_perturb.mean(axis=1)
 axes6[1].hist(scene_means, bins=20, color='#9B59B6', alpha=0.75, edgecolor='white')
-axes6[1].axvline(score.mean(), color='red', linewidth=2, linestyle='--',
-                 label=f'基准均值={score.mean():.4f}')
-axes6[1].set_xlabel('各场景全局平均风险得分'); axes6[1].set_ylabel('场景频数')
+axes6[1].axvline(score[sample_indices].mean(), color='red', linewidth=2, linestyle='--',
+                 label=f'基准均值={score[sample_indices].mean():.4f}')
+axes6[1].set_xlabel('各场景采样平均风险得分')
+axes6[1].set_ylabel('场景频数')
 axes6[1].set_title('27组扰动场景得分分布', fontsize=11, fontweight='bold')
 axes6[1].legend(fontsize=9)
 axes6[1].text(0.97, 0.97, f"Std={scene_means.std():.5f}",
@@ -498,10 +515,7 @@ save(fig6, 'Step3_06_Robustness.png')
 
 # ----------------------------------------------------------------
 # 图7：时空演变分析（对标金融风险论文框架）
-#   - 核密度估计：风险得分分布演变（需多年逐年得分）
-#   - 变异系数 + 基尼系数 时序
 # ----------------------------------------------------------------
-# 加载年度统计
 year_csv = os.path.join(DYN_DIR, 'Year_Statistics.csv')
 has_year_data = os.path.exists(year_csv)
 
@@ -513,12 +527,6 @@ if has_year_data:
     fig7.suptitle('北京市内涝风险时空演变特征分析', fontsize=15, fontweight='bold')
     gs7  = mgs.GridSpec(2, 3, figure=fig7, hspace=0.38, wspace=0.35)
 
-    # 加载每年归一化WDI → 计算各年得分
-    # 用各年WDI map 重新计算年度风险得分
-    year_risk_scores = {}
-    wdi_dir_tifs = {}   # 检查是否有逐年TIF
-
-    # 各年风险均值 / CV / Gini 从year_records中估算
     wdi_yr_means = df_years.get('wdi_mean_norm', df_years.get('wdi_mean_raw', None))
     wdi_yr_p95   = df_years.get('wdi_p95_norm',  df_years.get('wdi_p95_raw',  None))
 
@@ -554,7 +562,7 @@ if has_year_data:
                plt.Line2D([0], [0], color='#4CAF50', marker='s', label='SM均值')]
     ax73.legend(handles=lines3, fontsize=8)
 
-    # 子图4：WDI P95时序（时间演变主线）
+    # 子图4：WDI P95时序
     ax74 = fig7.add_subplot(gs7[1, :2])
     if wdi_yr_p95 is not None:
         x74 = np.arange(len(years_ts))
@@ -566,7 +574,6 @@ if has_year_data:
         ax74.set_ylabel('WDI P95（归一化）')
         ax74_r.set_ylabel('汛期累积降雨(mm)', color='#2196F3')
         ax74.set_title('WDI P95 时间演变 vs 汛期降雨', fontweight='bold', fontsize=11)
-        # 趋势
         if len(x74) >= 4:
             s_w, b_w, r_w, p_w, _ = stats.linregress(x74, wdi_yr_p95.values)
             ax74.plot(x74, s_w * x74 + b_w, 'r--', linewidth=1.5, alpha=0.7)
@@ -590,7 +597,7 @@ if has_year_data:
     ax75.set_ylabel('变异系数 CV'); ax75.set_title('WDI空间差异性演变\n（变异系数）', fontweight='bold')
 
     plt.savefig(os.path.join(VIS_DIR, 'Step3_07_SpatioTemporal.png'),
-                dpi=180, bbox_inches='tight', facecolor='white')
+                   dpi=180, bbox_inches='tight', facecolor='white')
     plt.close()
     print(f"    → Step3_07_SpatioTemporal.png")
 
@@ -611,7 +618,7 @@ cb8a = plt.colorbar(sm8a, ax=ax8a, shrink=0.8, pad=0.02)
 cb8a.set_label('风险得分')
 ax8a.text(0.02, 0.02,
           f"w: WDI={w[0]:.3f} | 低洼={w[1]:.3f} | 平坦={w[2]:.3f}\n"
-          f"稳健性Std: {std_rob.mean():.5f}",
+          f"稳健性Std: {std_rob_sample.mean():.5f}",
           transform=ax8a.transAxes, fontsize=9,
           bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
 
