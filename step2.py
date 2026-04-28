@@ -186,11 +186,13 @@ print(f"    栅格尺寸: {h} × {w}  有效像元: {valid_mask.sum():,}")
 print("\n[2/4] 逐年全汛期累积产流 + WDI 计算...")
 print("  （改进：全汛期累积降雨 → 代替单日暴雨，物理意义更完整）\n")
 
-year_raw_wdi  = {}
-year_records  = []
+year_raw_wdi   = {}
+year_acc_raw   = {}   # 暂存各年 acc_arr，用于计算全局 scale
+year_records   = []
 # 存储各年 WDI 空间图（粗分辨率，节省内存）
 DOWNSAMPLE = 10   # 每10像元采一个，用于时空分析
 
+# ---- 第一遍：计算各年 acc，暂不转 WDI ----
 for year in YEARS:
     nc_path = os.path.join(NC_DIR, f'CHM_PRE_V2_daily_{year}.nc')
     if not os.path.exists(nc_path):
@@ -274,16 +276,22 @@ for year in YEARS:
     # WDI 计算（log1p变换解决量级差问题）
     slope_s = np.clip(slope, 0.5, 60.0).astype(np.float64)
     hand_s  = np.clip(hand,  0.0, 500.0).astype(np.float64)
-    log_acc   = np.log1p(acc_arr * 1e6)
-    log_denom = np.log1p(slope_s) * np.log1p(hand_s)
-    raw_wdi   = np.where(
-        nodata_mask | (log_denom < 1e-6),
-        np.nan,
-        log_acc / (log_denom + 1e-8)
-    ).astype(np.float32)
 
-    year_raw_wdi[year] = raw_wdi
-    valid_wdi = raw_wdi[~np.isnan(raw_wdi)]
+    # 暂存 acc_arr，待第二遍用全局 scale 统一转 WDI
+    year_acc_raw[year] = acc_arr.astype(np.float32)
+
+    # 临时 WDI（仅用于本年过程图，量级不跨年比较）
+    acc_pos_tmp = acc_arr[~nodata_mask & (acc_arr > 1e-12)]
+    tmp_scale   = (np.exp(6.0) - 1.0) / max(float(np.percentile(acc_pos_tmp, 75)), 1e-12) \
+                  if acc_pos_tmp.size > 100 else 1e8
+    log_acc_tmp   = np.log1p(acc_arr * tmp_scale)
+    log_denom_tmp = np.log1p(np.clip(slope, 0.5, 60.0)) * np.log1p(np.clip(hand, 0.0, 500.0))
+    raw_wdi_tmp   = np.where(
+        nodata_mask | (log_denom_tmp < 1e-6),
+        np.nan,
+        log_acc_tmp / (log_denom_tmp + 1e-8)
+    ).astype(np.float32)
+    valid_wdi = raw_wdi_tmp[~np.isnan(raw_wdi_tmp)]
     wdi_mean  = float(np.nanmean(valid_wdi))
     wdi_p95   = float(np.nanpercentile(valid_wdi, 95))
 
@@ -312,7 +320,7 @@ for year in YEARS:
         (season_rain_nc, '① 汛期累积降雨(mm)', 'Blues', None),
         (soil_deficit,   '② 汛前土壤水分亏缺', 'RdYlBu', None),
         (runoff_coeff,   '③ 动态产流系数',     'Reds',  (0.05, 0.95)),
-        (raw_wdi,        '④ WDI(汛期累积)',    'hot_r', None),
+        (raw_wdi_tmp,    '④ WDI(汛期累积)',    'hot_r', None),
     ]
     for ax_y, (data, title, cmap, vrange) in zip(axes_y, panels):
         if vrange:
@@ -332,6 +340,49 @@ for year in YEARS:
     plt.savefig(os.path.join(VIS_DIR, f'Year_{year}_Process.png'), dpi=150, bbox_inches='tight',
                 facecolor='white')
     plt.close()
+
+# ============================================================
+# 2.5/4  用全局 scale 统一计算各年最终 WDI
+# ============================================================
+print("\n[2.5/4] 全局 scale 统一转换 WDI...")
+
+# 汇总所有年的正值 acc，确定全局 P75
+_chunks = [
+    arr[~nodata_mask & (arr > 1e-12)]
+    for arr in year_acc_raw.values()
+]
+_chunks = [c for c in _chunks if c.size > 0]
+all_acc_pos = np.concatenate(_chunks) if _chunks else np.array([])
+if all_acc_pos.size > 100:
+    global_acc_p75 = float(np.percentile(all_acc_pos, 75))
+    global_scale   = (np.exp(6.0) - 1.0) / max(global_acc_p75, 1e-12)
+    print(f"    全局 acc P75={global_acc_p75:.6e}  全局 scale={global_scale:.3e}")
+else:
+    global_scale = 1e8
+    print(f"    使用默认全局 scale={global_scale:.2e}")
+
+slope_s_g = np.clip(slope, 0.5, 60.0).astype(np.float64)
+hand_s_g  = np.clip(hand,  0.0, 500.0).astype(np.float64)
+log_denom_g = np.log1p(slope_s_g) * np.log1p(hand_s_g)
+
+for year, acc_arr_y in year_acc_raw.items():
+    log_acc_g = np.log1p(acc_arr_y.astype(np.float64) * global_scale)
+    raw_wdi_g = np.where(
+        nodata_mask | (log_denom_g < 1e-6),
+        np.nan,
+        log_acc_g / (log_denom_g + 1e-8)
+    ).astype(np.float32)
+    year_raw_wdi[year] = raw_wdi_g
+    valid_g = raw_wdi_g[~np.isnan(raw_wdi_g)]
+    # 更新 year_records 中该年的 wdi 统计
+    for rec in year_records:
+        if rec['year'] == year:
+            rec['wdi_mean_raw'] = float(np.nanmean(valid_g))
+            rec['wdi_p95_raw']  = float(np.nanpercentile(valid_g, 95))
+            rec['wdi_p99_raw']  = float(np.nanpercentile(valid_g, 99))
+            print(f"    {year}: WDI mean={rec['wdi_mean_raw']:.3f}  "
+                  f"P95={rec['wdi_p95_raw']:.3f}")
+            break
 
 # ============================================================
 # 3/4  跨年归一化 + 多年极值
@@ -410,7 +461,7 @@ years_list = df['year'].tolist()
 n_years    = len(year_wdi_norm)
 
 # ----------------------------------------------------------------
-# 图1：各年WDI空间分布（北京市掩膜）
+# 图1：各���WDI空间分布（北京市掩膜）
 # ----------------------------------------------------------------
 ncols    = min(4, n_years)
 nrows    = (n_years + ncols - 1) // ncols
@@ -464,10 +515,24 @@ for idx, (yr, wdi_n) in enumerate(year_wdi_norm.items()):
     if vals.size < 100: continue
     # 采样加速
     sample = vals[np.random.choice(len(vals), min(5000, len(vals)), replace=False)]
-    kde    = gaussian_kde(sample, bw_method='silverman')
-    x_grid = np.linspace(0, 1, 300)
-    ax21.plot(x_grid, kde(x_grid), color=colors_kde[idx],
-              linewidth=1.5, alpha=0.85, label=str(yr))
+    # 若样本方差极小（常数序列），gaussian_kde 会崩溃，改用直方图估计
+    if np.std(sample) < 1e-6:
+        counts, bin_edges = np.histogram(sample, bins=100, range=(0, 1), density=True)
+        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        ax21.plot(bin_centers, counts, color=colors_kde[idx],
+                  linewidth=1.5, alpha=0.85, label=str(yr))
+        continue
+    try:
+        kde    = gaussian_kde(sample, bw_method='silverman')
+        x_grid = np.linspace(0, 1, 300)
+        ax21.plot(x_grid, kde(x_grid), color=colors_kde[idx],
+                  linewidth=1.5, alpha=0.85, label=str(yr))
+    except Exception:
+        # 降级：直方图
+        counts, bin_edges = np.histogram(sample, bins=100, range=(0, 1), density=True)
+        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        ax21.plot(bin_centers, counts, color=colors_kde[idx],
+                  linewidth=1.5, alpha=0.85, label=str(yr))
 
 ax21.set_xlabel('WDI 归一化值', fontsize=11)
 ax21.set_ylabel('核密度', fontsize=11)
