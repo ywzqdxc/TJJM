@@ -25,6 +25,7 @@ plt.rcParams['axes.unicode_minus'] = False
 # ============================================================
 STATIC_DIR = r'./Step_New/Static'
 RISK_DIR = r'./Step_New/Risk_Map'
+POI_DIR = r'./Step_New/POI_Exposure'  # 新增 POI 数据路径
 VIS_DIR = r'./Step_New/Visualization/Step4'
 os.makedirs(VIS_DIR, exist_ok=True)
 
@@ -52,10 +53,12 @@ print("\n[1/2] 加载数据...")
 slope = load_data(os.path.join(STATIC_DIR, 'slope.npy'))
 hand  = load_data(os.path.join(STATIC_DIR, 'hand.npy'))
 ks    = load_data(os.path.join(STATIC_DIR, 'ks.npy'))
-urban = load_data(os.path.join(STATIC_DIR, 'urban_mask.npy')).astype(float)
 nodata_mask = load_data(os.path.join(STATIC_DIR, 'nodata_mask.npy'))
 
-# 加载Step3的风险等级图
+# 加载Step2.5的POI暴露度
+poi_exp = load_data(os.path.join(POI_DIR, 'POI_Exposure_LogNorm.tif'))
+
+# 加载Step3的风险等级图 (已修正为 4D)
 risk_level = load_data(os.path.join(RISK_DIR, 'Risk_Level_4D.tif'))
 
 # 构建有效掩膜
@@ -67,7 +70,7 @@ data = {
     'Slope (°)': slope[valid_mask],
     'HAND (m)': hand[valid_mask],
     'Ks (mm/h)': ks[valid_mask],
-    'Urban_Pct': urban[valid_mask],
+    'POI 暴露度': poi_exp[valid_mask],  # 替换为 POI 暴露度
     'Risk_Level': risk_level[valid_mask].astype(int)
 }
 df = pd.DataFrame(data).dropna()
@@ -81,7 +84,7 @@ indicators = {
     'Slope (°)': 'Slope (°)',
     'HAND (m)': 'HAND (m)',
     'Ks (mm/h)': 'Ks (mm/h)',
-    'Urban_Pct': 'Urban_Pct'
+    'POI 暴露度': 'POI 暴露度'  # 替换为 POI 暴露度
 }
 
 results = {}
@@ -105,7 +108,7 @@ for name, res in results.items():
 print("\n    绘制组合小提琴图...")
 
 fig, axes = plt.subplots(2, 2, figsize=(16, 12), facecolor='white')
-fig.suptitle('不同内涝风险等级的下垫面因子分布差异诊断',
+fig.suptitle('不同内涝风险等级的四维驱动因子分布差异诊断',
              fontsize=16, fontweight='bold', y=0.98)
 
 for idx, (name, col) in enumerate(indicators.items()):
@@ -184,8 +187,8 @@ print(f"   📊 小提琴图 → {out_path}")
 print(f"   📋 统计表   → {output_csv}")
 print(f"\n   [论文写作指引]：")
 print(f"   将这张图作为论文第4章的核心插图，结论可以直接写：")
-print(f"   'Kruskal-Wallis H检验表明，坡度、相对高程、土壤导水率和不透水率")
+print(f"   'Kruskal-Wallis H检验表明，坡度、相对高程、土壤导水率和POI暴露度")
 print(f"   在不同风险等级区域间均存在极显著差异(P<0.001)。")
 print(f"   其中，极高风险区呈现出极低的HAND(均值仅{df_summary.loc[4,'HAND (m)_mean']:.2f}m)、")
-print(f"   极平的坡度(均值{df_summary.loc[4,'Slope (°)_mean']:.2f}°)和极高的不透水率，")
-print(f"   这从统计上量化了地形低洼与城市化对严重内涝的叠加驱动效应。'")
+print(f"   极平的坡度(均值{df_summary.loc[4,'Slope (°)_mean']:.2f}°)和极高的POI暴露度，")
+print(f"   这从统计上量化了地形低洼与高密度承灾体暴露对严重内涝的叠加驱动效应。'")
