@@ -74,18 +74,22 @@ def read_optimal_name():
     p = os.path.join(RISK_DIR, 'Optimal_Model_Name.txt')
     return open(p).read().strip() if os.path.exists(p) else 'TOPSIS'
 
-def ds_show(ax, data, mask, cmap, title, vmin=None, vmax=None, ds=4):
-    d = data[::ds,::ds]; m = mask[::ds,::ds]
+def ds_show(ax, data, mask, cmap, title, vmin=None, vmax=None, ds=4, add_colorbar=True):
+    d = data[::ds, ::ds]
+    m = mask[::ds, ::ds]
     d = np.where(m & np.isfinite(d), d, np.nan)
     v = d[np.isfinite(d)]
     if v.size == 0:
-        ax.text(0.5,0.5,'无数据',ha='center',va='center',transform=ax.transAxes)
-        ax.axis('off'); return None
-    vmin = vmin or float(np.nanpercentile(v,2))
-    vmax = vmax or float(np.nanpercentile(v,98))
+        ax.text(0.5, 0.5, '无数据', ha='center', va='center', transform=ax.transAxes)
+        ax.axis('off')
+        return None
+    vmin = vmin or float(np.nanpercentile(v, 2))
+    vmax = vmax or float(np.nanpercentile(v, 98))
     im = ax.imshow(d, cmap=cmap, vmin=vmin, vmax=vmax, interpolation='bilinear')
-    ax.axis('off'); ax.set_title(title, fontsize=11, fontweight='bold')
-    plt.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
+    ax.axis('off')
+    ax.set_title(title, fontsize=11, fontweight='bold')
+    if add_colorbar:
+        plt.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
     return im
 
 # 加载最优模型名称
@@ -126,35 +130,99 @@ if vuln_optimal is not None:
 
 
 # ============================================================
-# 图1：三模型空间对比（替代原WDI空间图）
+# 图1：三模型空间对比（替代原WDI空间图）—— 完整修正版
 # ============================================================
 print("\n[1/5] 三模型空间对比图...")
 
-fig1, axes1 = plt.subplots(2, 2, figsize=(16, 12))
-fig1.suptitle(f'三模型脆弱性评估空间对比（北京市 2012-2024）\n最优模型：{best_model}',
-               fontsize=14, fontweight='bold', y=0.98)
+# 创建较大的画布，为左侧图例和行间距离留出空间
+fig1, axes1 = plt.subplots(2, 2, figsize=(18, 14))
 
+# 主标题位置下移，同时调整子图间距
+fig1.suptitle(f'三模型脆弱性评估空间对比（北京市 2012-2024）\n最优模型：{best_model}',
+               fontsize=15, fontweight='bold', y=0.98)
+
+# 手动控制子图之间的水平和垂直间距，以及左边留白（放竖排图例）
+plt.subplots_adjust(left=0.12, right=0.92, top=0.90, bottom=0.08,
+                    wspace=0.15, hspace=0.45)
+
+# 所有子图共用的等级划分（参照您表格中的数值）
+level_bounds = [0.000, 0.049, 0.149, 0.284, 0.479, 1.000]
+level_labels = ['极低脆弱\n(0.00-0.05)', '低脆弱\n(0.05-0.15)',
+                '中脆弱\n(0.15-0.28)', '高脆弱\n(0.28-0.48)', '极高脆弱\n(0.48-1.00)']
+
+# 每个模型对应的 colormap
 cmaps = {'TOPSIS': 'YlOrRd', 'WLC': 'YlOrBr', 'VSC': 'RdPu'}
-for idx, m in enumerate(['TOPSIS', 'WLC', 'VSC']):
-    ax = axes1[idx//2][idx%2]
-    g  = vuln_grids.get(m)
+model_names = ['TOPSIS', 'WLC', 'VSC']
+
+for idx, m in enumerate(model_names):
+    ax = axes1[idx // 2][idx % 2]
+    g = vuln_grids.get(m)
     if g is not None:
-        ds_show(ax, g, valid_mask, cmaps[m], f'模型{["A","B","C"][idx]}: {m}')
+        # 绘制图像，不加 colorbar
+        ds_show(ax, g, valid_mask, cmaps[m],
+                f'模型{["A","B","C"][idx]}: {m}',
+                add_colorbar=False)
+
+        # ---------- 为该子图生成左侧竖排圆圈图例 ----------
+        # 从该模型的 colormap 中提取五个等级的代表颜色（用区间中点）
+        cmap_obj = plt.get_cmap(cmaps[m])
+        circle_colors = []
+        for i in range(len(level_bounds)-1):
+            mid_val = (level_bounds[i] + level_bounds[i+1]) / 2.0
+            color = cmap_obj(mid_val)  # 取区间中间值的颜色
+            circle_colors.append(color)
+
+        # 创建圆圈句柄
+        from matplotlib.lines import Line2D
+        circle_handles = [Line2D([0], [0], marker='o', color='w',
+                                 markerfacecolor=col, markersize=12,
+                                 markeredgecolor='black', markeredgewidth=1)
+                          for col in circle_colors]
+
+        # 把图例放在子图左侧外部（竖排）
+        ax.legend(circle_handles, level_labels,
+                  loc='center left',
+                  bbox_to_anchor=(-0.22, 0.5),   # 水平偏移向外，垂直居中
+                  frameon=False,
+                  fontsize=9,
+                  handletextpad=0.5,
+                  labelspacing=0.8)
     else:
-        ax.text(0.5,0.5,f'{m} 结果缺失',ha='center',va='center',
-                transform=ax.transAxes,fontsize=12)
+        ax.text(0.5, 0.5, f'{m} 结果缺失', ha='center', va='center',
+                transform=ax.transAxes, fontsize=12)
         ax.axis('off')
 
-# 最优模型
+# 最优模型（右下角）
 if vuln_optimal is not None:
     ds_show(axes1[1][1], vuln_optimal, all_valid_px, 'YlOrRd',
-            f'★ 最优模型: {best_model}')
-else:
-    axes1[1][1].text(0.5,0.5,'最优模型结果缺失',ha='center',va='center',
-                      transform=axes1[1][1].transAxes); axes1[1][1].axis('off')
+            f'★ 最优模型: {best_model}',
+            add_colorbar=False)
 
-plt.tight_layout(rect=[0,0,1,0.96])
-fig1.savefig(os.path.join(OUT_DIR,'Fig1_ThreeModel_Spatial.png'),
+    # 最优模型的图例（与其颜色映射一致，设为 YlOrRd）
+    cmap_opt = plt.get_cmap('YlOrRd')
+    opt_colors = []
+    for i in range(len(level_bounds)-1):
+        mid_val = (level_bounds[i] + level_bounds[i+1]) / 2.0
+        opt_colors.append(cmap_opt(mid_val))
+
+    opt_handles = [Line2D([0], [0], marker='o', color='w',
+                          markerfacecolor=col, markersize=12,
+                          markeredgecolor='black', markeredgewidth=1)
+                   for col in opt_colors]
+    axes1[1][1].legend(opt_handles, level_labels,
+                       loc='center left',
+                       bbox_to_anchor=(-0.22, 0.5),
+                       frameon=False,
+                       fontsize=9,
+                       handletextpad=0.5,
+                       labelspacing=0.8)
+else:
+    axes1[1][1].text(0.5, 0.5, '最优模型结果缺失', ha='center', va='center',
+                      transform=axes1[1][1].transAxes)
+    axes1[1][1].axis('off')
+
+# 保存（无需 tight_layout，因为我们已经手动控制了间距）
+fig1.savefig(os.path.join(OUT_DIR, 'Fig1_ThreeModel_Spatial.png'),
              bbox_inches='tight', facecolor='white')
 plt.close()
 print(f"  ✅ Fig1_ThreeModel_Spatial.png")
@@ -240,11 +308,11 @@ ax.fill_between(years_arr, E_ts, alpha=0.12, color='#E74C3C')
 ax.fill_between(years_arr, S_ts, alpha=0.12, color='#F39C12')
 ax.fill_between(years_arr, C_ts, alpha=0.12, color='#2ECC71')
 l1, = ax.plot(years_arr, E_ts, color='#E74C3C', marker='o', linewidth=2.5,
-               markersize=7, label='暴露度指数 E（降雨/CR/TWI/HAND/积水点）')
+               markersize=7, label='暴露度指数 E')
 l2, = ax.plot(years_arr, S_ts, color='#F39C12', marker='s', linewidth=2.5,
-               markersize=7, linestyle='--', label='敏感性指数 S（人口/道路）')
+               markersize=7, linestyle='--', label='敏感性指数 S')
 l3, = ax.plot(years_arr, C_ts, color='#2ECC71', marker='^', linewidth=2.5,
-               markersize=7, linestyle=':', label='应对不足分量 C（避难/医院/消防，逆向）')
+               markersize=7, linestyle=':', label='应对不足分量 C')
 
 ax.set_xlabel('年份', fontsize=13)
 ax.set_ylabel('归一化分量指数', fontsize=13)

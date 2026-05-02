@@ -155,22 +155,41 @@ print(f"    显著上升（p<{ALPHA}, Z>0）: {n_up:,}  ({n_up/N*100:.2f}%)")
 print(f"    无显著趋势:                {n_none:,}  ({n_none/N*100:.2f}%)")
 print(f"    显著下降（p<{ALPHA}, Z<0）: {n_down:,}  ({n_down/N*100:.2f}%)")
 
-
 # ============================================================
 # 三、Sen's斜率估计
 # ============================================================
-print("\n[3/5] Sen's斜率估计（向量化）...")
+print("\n[3/5] Sen's斜率估计（分块计算，防内存溢出）...")
 
-# 计算所有时间对的斜率：(x[j]-x[i])/(j-i)
-slope_pairs = []
-for i in range(T - 1):
-    for j in range(i + 1, T):
-        dt = j - i   # 时间差（年）
-        slope_pairs.append((years_flat[j] - years_flat[i]) / dt)
+sen_slope = np.zeros(N, dtype=np.float32)
 
-# slope_pairs: list of (N,) arrays，长度 = C(T,2) = 78
-slopes_mat = np.stack(slope_pairs, axis=0)   # (78, N)
-sen_slope  = np.median(slopes_mat, axis=0).astype(np.float32)   # (N,)
+# 设置分块大小（每次处理 200 万个像元，内存占用约 600MB，非常安全）
+chunk_size = 2_000_000
+n_chunks = int(np.ceil(N / chunk_size))
+
+for c in range(n_chunks):
+    start_idx = c * chunk_size
+    end_idx = min((c + 1) * chunk_size, N)
+
+    # 提取当前块的时序矩阵 (T, chunk_size)
+    years_chunk = years_flat[:, start_idx:end_idx]
+
+    # 计算当前块的时间对斜率
+    chunk_slopes = []
+    for i in range(T - 1):
+        for j in range(i + 1, T):
+            dt = j - i
+            chunk_slopes.append((years_chunk[j] - years_chunk[i]) / dt)
+
+    # 堆叠当前块并求中位数
+    slopes_mat_chunk = np.stack(chunk_slopes, axis=0)  # (78, chunk_size)
+    sen_slope[start_idx:end_idx] = np.median(slopes_mat_chunk, axis=0).astype(np.float32)
+
+    # 清理当前块的中间变量以释放内存
+    del chunk_slopes, slopes_mat_chunk
+
+    print(f"    进度: {c + 1}/{n_chunks} 块完成 ({(end_idx / N) * 100:.1f}%)")
+
+# 仅对MK显著像元保留斜率，其余置NaN
 
 # 仅对MK显著像元保留斜率，其余置NaN
 sig_mask_flat = sig_up | sig_down
@@ -269,11 +288,11 @@ im1 = ax1.imshow(tc_show, cmap=cmap_tc, vmin=0, vmax=3,
                   interpolation='nearest')
 ax1.axis('off')
 patches1 = [
-    mpatches.Patch(color='#D7191C', label=f'显著上升 (p<{ALPHA})  {n_up:,}像元 ({n_up/N*100:.1f}%)'),
-    mpatches.Patch(color='#F0F0F0', label=f'无显著趋势              {n_none:,}像元 ({n_none/N*100:.1f}%)'),
-    mpatches.Patch(color='#2C7BB6', label=f'显著下降 (p<{ALPHA})  {n_down:,}像元 ({n_down/N*100:.1f}%)'),
+    mpatches.Patch(color='#D7191C', label='显著上升'),
+    mpatches.Patch(color='#F0F0F0', label='无显著趋势'),
+    mpatches.Patch(color='#2C7BB6', label='显著下降'),
 ]
-ax1.legend(handles=patches1, loc='lower right', fontsize=11, framealpha=0.9)
+ax1.legend(handles=patches1, loc='upper left', fontsize=11, framealpha=0.9)
 ax1.set_title(f'北京市城市内涝脆弱性趋势分类图（Mann-Kendall检验, 2012-2024）\n'
                f'α={ALPHA}  双侧检验  T={T}年  完整像元{N:,}个',
                fontsize=13, fontweight='bold', pad=15)
@@ -284,6 +303,35 @@ print("  ✅ MK_Trend_Map.png")
 
 # ── 图2：Sen斜率图（发散色标，仅显著像元）
 fig2, ax2 = plt.subplots(figsize=(12, 8))
+
+# =========================================================
+# 【新增】：加载并生成严格的北京市行政边界掩膜
+# =========================================================
+import geopandas as gpd
+from rasterio.features import geometry_mask
+from shapely.ops import unary_union
+from shapely.geometry import mapping
+
+CITY_BOUNDARY_SHP = r'E:\Data\src\Beijing\北京市_市.shp'
+try:
+    # 加载 SHP 边界，并转换为与栅格相同的坐标系
+    city_gdf = gpd.read_file(CITY_BOUNDARY_SHP).to_crs(out_profile['crs'])
+    city_union = unary_union(city_gdf.geometry)
+    # 生成精确的布尔掩膜
+    city_vis = geometry_mask([mapping(city_union)], transform=out_profile['transform'],
+                             out_shape=(h, w), invert=True)
+    # 结合现有的 valid_mask
+    bg_mask = city_vis & valid_mask
+except Exception as e:
+    print(f"  ⚠️ 边界加载失败，使用默认矩形掩膜: {e}")
+    bg_mask = valid_mask
+
+# 1. 绘制精确的北京市浅灰色底图
+bg_grid = np.where(bg_mask, 1.0, np.nan)
+bg_show = make_show(bg_grid, nodata_val=np.nan)
+ax2.imshow(bg_show, cmap=ListedColormap(['#E5E5E5']), interpolation='nearest')
+
+# 2. 加载并处理需要叠加的斜率数据
 sen_show = make_show(sen_grid, nodata_val=-9999.0)
 
 # 确定色标范围（基于95%分位数）
@@ -293,6 +341,7 @@ if sig_s_plot.size > 10:
 else:
     vmax_s = 0.01
 
+# 3. 将彩色的斜率点精准叠加到底图上
 im2 = ax2.imshow(sen_show, cmap='RdBu_r', vmin=-vmax_s, vmax=vmax_s,
                   interpolation='bilinear')
 ax2.axis('off')

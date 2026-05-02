@@ -318,20 +318,24 @@ fig.suptitle('VSC内涝脆弱性评估稳健性验证报告（北京市 2012-202
 # ── 左图：权重扰动Spearman ρ分布
 ax1 = axes[0]
 ax1.hist(perturb_rhos, bins=30, color='#2C7BB6', alpha=0.8, edgecolor='white')
+
+# 恢复图例中的具体数值
 ax1.axvline(rho_mean, color='#D7191C', linewidth=2.5, linestyle='-',
-             label=f'均值 ρ={rho_mean:.4f}')
+            label=f'均值 ρ={rho_mean:.4f}')
 ax1.axvline(RHO_GOOD, color='#1A9641', linewidth=2, linestyle='--',
-             label=f'稳健阈值 {RHO_GOOD}')
+            label=f'稳健阈值 {RHO_GOOD}')
 ax1.fill_betweenx([0, ax1.get_ylim()[1] if ax1.get_ylim()[1] > 0 else 30],
                    rho_mean - rho_std, rho_mean + rho_std,
-                   alpha=0.2, color='#2C7BB6', label=f'±σ ({rho_std:.4f})')
+                   alpha=0.2, color='#2C7BB6',
+                   label=f'±σ ({rho_std:.4f})')
+
 ax1.set_xlabel('Spearman 秩相关系数 ρ', fontsize=12)
 ax1.set_ylabel('频次', fontsize=12)
+# 保持无 emoji 状态，防止出现乱码方框
 ax1.set_title(f'A. 权重扰动测试（N={N_PERTURB}, ±{PERTURB_PCT*100:.0f}%扰动）\n'
-               f'结论: {"✅ 稳健（均值>"+str(RHO_GOOD)+"）" if perturb_ok else "❌ 不稳健"}',
+               f'结论: {"稳健（均值>"+str(RHO_GOOD)+"）" if perturb_ok else "不稳健"}',
                fontsize=11, fontweight='bold')
-ax1.legend(fontsize=10)
-ax1.grid(alpha=0.3)
+ax1.legend(loc='upper left', fontsize=10)
 
 # ── 右图：Bootstrap Kappa分布
 ax2 = axes[1]
@@ -345,8 +349,9 @@ ax2.fill_betweenx([0, ax2.get_ylim()[1] if ax2.get_ylim()[1] > 0 else 30],
                    alpha=0.2, color='#D7191C', label=f'±σ ({kappa_std:.4f})')
 ax2.set_xlabel("Cohen's Kappa 系数", fontsize=12)
 ax2.set_ylabel('频次', fontsize=12)
+# 同理，去掉右图的 emoji 符号以防出现方框
 ax2.set_title(f'B. Bootstrap重抽样（N={N_BOOT}, {actual_boot_sample:,}像元/次）\n'
-               f'结论: {"✅ 稳健（均值>"+str(KAPPA_GOOD)+"）" if boot_ok else "❌ 不稳健"}',
+               f'结论: {"稳健（均值>"+str(KAPPA_GOOD)+"）" if boot_ok else "不稳健"}',
                fontsize=11, fontweight='bold')
 ax2.legend(fontsize=10)
 ax2.grid(alpha=0.3)

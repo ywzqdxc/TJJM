@@ -352,51 +352,68 @@ if all(c in df_full.columns for c in ['暴露度E','敏感性S','应对不足C']
                               encoding='utf-8-sig')
     print(f"  ✅ VSC_VulnType_Statistics.csv + VSC_LevelType_Crosstab.csv")
 
-    # 致脆类型图（饼图 + 堆叠柱）
-    fig6, axes6 = plt.subplots(1, 2, figsize=(16, 8), facecolor='white')
-    fig6.suptitle(f'北京市内涝脆弱性致脆类型分析（{best_model}模型，VSC三维框架）',
-                   fontsize=13, fontweight='bold')
+    # ============================================================
+    # 五、致脆类型识别 —— 桑基图（流向图）
+    # ============================================================
+    print("\n  致脆类型识别 —— 绘制桑基图...")
 
-    cnts = [df_full['VulnType'].value_counts().get(t,0) for t in TYPE_ORDER]
-    valid_t = [(t,c,col) for t,c,col in zip(TYPE_ORDER,cnts,TYPE_COLORS) if c>0]
-    if valid_t:
-        tl, tc, tco = zip(*valid_t)
-        axes6[0].pie(tc, labels=None, colors=tco, autopct='%1.1f%%',
-                      startangle=90, pctdistance=0.78,
-                      wedgeprops={'linewidth':1,'edgecolor':'white'})
-        pp = [mpatches.Patch(color=c, label=t) for t,c in zip(tl,tco)]
-        axes6[0].legend(handles=pp, loc='lower left', fontsize=7.5,
-                         framealpha=0.9, bbox_to_anchor=(-0.05,-0.1))
-        axes6[0].set_title('全域致脆类型面积占比', fontsize=12, fontweight='bold')
+    import plotly.graph_objects as go
+    import plotly.io as pio
 
-    lv_arr = np.zeros((5, len(TYPE_ORDER)))
-    for ki, t in enumerate(TYPE_ORDER):
-        for lv in range(1,6):
-            mk  = df_full['Risk_Level'] == lv
-            tot = mk.sum()
-            lv_arr[lv-1,ki] = (df_full.loc[mk,'VulnType']==t).sum()/tot*100 if tot>0 else 0
+    # 1. 节点定义：左边 5 个脆弱等级 + 右边 8 个致脆类型
+    level_labels = LEVEL_NAMES  # ['极低脆弱','低脆弱','中脆弱','高脆弱','极高脆弱']
+    type_labels = TYPE_ORDER    # ['O（弱综合型）','E（暴露致脆）', ...]
+    all_nodes = level_labels + type_labels
 
-    bot = np.zeros(5)
-    for ki,(t,col) in enumerate(zip(TYPE_ORDER,TYPE_COLORS)):
-        vals = lv_arr[:,ki]
-        if vals.max()>0.5:
-            axes6[1].bar(range(1,6), vals, bottom=bot, color=col,
-                          alpha=0.85, label=t, edgecolor='white')
-        bot += vals
+    # 2. 节点颜色：左边用等级颜色，右边用类型颜色
+    node_colors = LEVEL_COLORS + TYPE_COLORS
 
-    axes6[1].set_xticks(range(1,6))
-    axes6[1].set_xticklabels(LEVEL_NAMES, rotation=20, fontsize=9, ha='right')
-    axes6[1].set_ylabel('类型占比 (%)', fontsize=11)
-    axes6[1].set_ylim(0,105)
-    axes6[1].set_title('各脆弱等级内致脆类型构成', fontsize=12, fontweight='bold')
-    axes6[1].legend(loc='upper right', fontsize=7, framealpha=0.9, ncol=2)
-    axes6[1].grid(axis='y', alpha=0.3)
+    # 3. 构建流向计数（Risk_Level -> VulnType）
+    source = df_full['Risk_Level'] - 1          # 转为0-based索引
+    target = df_full['VulnType'].map(
+        {name: idx + len(level_labels) for idx, name in enumerate(TYPE_ORDER)}
+    )  # 目标节点索引从5开始
+    # 确保没有无效映射
+    valid_flow = target.notna()
+    source = source[valid_flow]
+    target = target[valid_flow]
+    # 统计每一对 (source, target) 的像元数
+    pairs = pd.DataFrame({'source': source, 'target': target})
+    flow_counts = pairs.groupby(['source', 'target']).size().reset_index(name='value')
 
-    plt.tight_layout(rect=[0,0,1,0.96])
-    out_6 = os.path.join(VIS_DIR,'Step5_VulnType_Analysis.png')
-    fig6.savefig(out_6, dpi=200, bbox_inches='tight', facecolor='white')
-    plt.close()
-    print(f"  ✅ Step5_VulnType_Analysis.png")
+    # 4. 创建桑基图
+    fig_sankey = go.Figure(data=[go.Sankey(
+        node=dict(
+            pad=15,
+            thickness=20,
+            line=dict(color="black", width=0.5),
+            label=all_nodes,
+            color=node_colors
+        ),
+        link=dict(
+            source=flow_counts['source'].tolist(),
+            target=flow_counts['target'].tolist(),
+            value=flow_counts['value'].tolist(),
+            color='rgba(150,150,150,0.3)'   # 流向半透明灰色
+        )
+    )])
+
+    fig_sankey.update_layout(
+        title_text=f'脆弱性等级 → 致脆类型流向图（{best_model}模型）',
+        font_size=12,
+        width=1200,
+        height=700
+    )
+
+    # 5. 保存为 HTML（交互式）和 PNG（静态备用）
+    html_path = os.path.join(VIS_DIR, 'Step5_VulnType_Sankey.html')
+    png_path = os.path.join(VIS_DIR, 'Step5_VulnType_Sankey.png')
+    pio.write_html(fig_sankey, html_path, auto_open=False)
+    try:
+        fig_sankey.write_image(png_path, scale=2)  # 需要 kaleido
+        print(f"  ✅ Step5_VulnType_Sankey.html + .png 已保存")
+    except Exception as e:
+        print(f"  ✅ Step5_VulnType_Sankey.html 已保存（PNG导出需安装 kaleido: pip install kaleido）")
 
 else:
     print(f"  ⚠️  E/S/C分量未找到，跳过致脆类型识别")

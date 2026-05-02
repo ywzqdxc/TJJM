@@ -43,6 +43,7 @@ OUTPUT_DIR = r'./Step_New/Static'
 VIS_DIR    = r'./Step_New/Visualization/Step1'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(VIS_DIR,    exist_ok=True)
+CITY_BOUNDARY_SHP = r'E:\Data\src\Beijing\北京市_市.shp'   # ★ 仅用于可视化裁剪
 
 # ============================================================
 # 三类下垫面参数（SCS-CN经验值）
@@ -78,27 +79,28 @@ def read_tif_aligned(path, h, w, nodata_threshold=NODATA_THRESHOLD):
     return np.where(invalid, np.nan, raw), ~invalid
 
 
-def imshow_masked(ax, data, nodata_mask, cmap, vmin=None, vmax=None,
-                  max_pixels=2000, **kwargs):
-    h_o, w_o = data.shape
-    if max(h_o, w_o) > max_pixels:
-        sc = max_pixels / max(h_o, w_o)
-        d  = zoom(data, sc, order=1).astype(np.float32)
-        m  = zoom((~nodata_mask).astype(np.float32), sc, order=0).astype(bool)
-    else:
-        d, m = data.copy().astype(np.float32), ~nodata_mask
-    d[~m] = np.nan
-    valid = d[m & ~np.isnan(d)]
-    if vmin is None: vmin = np.nanpercentile(valid, 2)  if valid.size > 0 else 0
-    if vmax is None: vmax = np.nanpercentile(valid, 98) if valid.size > 0 else 1
-    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
-    cm   = plt.get_cmap(cmap)
-    rgba = np.zeros((*d.shape, 4), dtype=np.float32)
-    vp   = m & ~np.isnan(d)
-    if vp.any(): rgba[vp] = cm(norm(d[vp]))
-    ax.imshow(rgba, interpolation='bilinear', **kwargs)
-    sm = plt.cm.ScalarMappable(cmap=cm, norm=norm); sm.set_array([])
-    return sm
+def imshow_masked(ax, data, vis_mask, cmap, vmin=None, vmax=None,
+                  max_pixels=2000, ds=4, **kwargs):
+    """安全可视化：只显示 vis_mask 内的区域，无边缘颜色泄露，无矩形背景"""
+    # 将不在可视范围内的像元设为 NaN
+    data_show = np.where(vis_mask, data, np.nan)
+    # 切片降采样（彻底杜绝边缘插值泄露）
+    d_ds = data_show[::ds, ::ds]
+    m_ds = vis_mask[::ds, ::ds]
+
+    cmap_obj = plt.get_cmap(cmap).copy()
+    cmap_obj.set_bad(color='white', alpha=0)       # 无效区完全透明
+
+    valid_vals = d_ds[m_ds & np.isfinite(d_ds)]
+    if vmin is None:
+        vmin = np.nanpercentile(valid_vals, 2) if valid_vals.size > 0 else 0
+    if vmax is None:
+        vmax = np.nanpercentile(valid_vals, 98) if valid_vals.size > 0 else 1
+
+    im = ax.imshow(d_ds, cmap=cmap_obj, vmin=vmin, vmax=vmax,
+                   interpolation='nearest', **kwargs)
+    ax.axis('off')
+    return im, vmin, vmax
 
 
 def print_stats(name, arr):
@@ -148,6 +150,20 @@ with rasterio.open(DEM_PATH) as ref:
 dem_clean       = np.where(dem < -100, np.nan, dem.astype(np.float32))
 nodata_mask_dem = np.isnan(dem_clean)
 valid_pixels    = int(np.sum(~nodata_mask_dem))
+# ── ★ 新增：加载北京市边界，生成可视化掩膜（不参与任何计算） ──
+try:
+    import geopandas as gpd
+    from rasterio.features import geometry_mask
+    from shapely.ops import unary_union
+    from shapely.geometry import mapping
+    city_gdf = gpd.read_file(CITY_BOUNDARY_SHP).to_crs(crs.to_epsg())
+    city_union = unary_union(city_gdf.geometry)
+    city_vis = geometry_mask([mapping(city_union)], transform=transform,
+                             out_shape=(h, w), invert=True) & (~nodata_mask_dem)
+    print("  ✅ 已加载北京市边界，可视化将严格裁剪至市界内")
+except Exception:
+    city_vis = ~nodata_mask_dem
+    print("  ⚠️ 边界加载失败，使用 DEM 有效像元作为可视化范围")
 
 print(f"    栅格尺寸: {h} 行 × {w} 列")
 print(f"    DEM有效像元: {valid_pixels:,}  /  总像元: {h*w:,}")
@@ -297,15 +313,6 @@ panels = [
     (fig.add_subplot(gs[1,1]), ths,        'BrBG',      '⑤ 饱和含水量θs',       ths_stats),
     (fig.add_subplot(gs[1,2]), psi_abs,    'PuBu',      '⑥ 毛管吸力|Psi|(cm)',  psi_stats),
 ]
-for ax, data, cmap, title, st in panels:
-    ax.set_facecolor('none'); ax.patch.set_alpha(0)
-    sm = imshow_masked(ax, data, nodata_mask_full, cmap)
-    ax.set_title(title, fontsize=11, fontweight='bold'); ax.axis('off')
-    cb = plt.colorbar(sm, ax=ax, shrink=0.85, pad=0.02, aspect=20)
-    ax.text(0.02, 0.02,
-            f"均={st['mean']:.3f}\nCV={st['cv']:.3f}",
-            transform=ax.transAxes, fontsize=8.5, verticalalignment='bottom',
-            bbox=dict(boxstyle='round', facecolor='white', alpha=0.3))
 plt.subplots_adjust(left=0.05, right=0.95, top=0.92, bottom=0.05)
 out1 = os.path.join(VIS_DIR, 'Step1_01_Overview.png')
 plt.savefig(out1, dpi=200, bbox_inches='tight', transparent=True); plt.close()
@@ -318,8 +325,11 @@ fig2.suptitle('Step 1 (v5.0)：三类下垫面空间分布', fontsize=14, fontwe
 ax_cls = axes2[0]
 cls_map = np.full((h, w), np.nan)
 cls_map[natural_mask] = 0; cls_map[rock_mask] = 1; cls_map[urban_mask] = 2
+# 城市外区域不显示
+cls_map[~city_vis] = np.nan
 cmap3 = ListedColormap(['#4CAF50', '#A0522D', '#E91E63'])
-ax_cls.imshow(cls_map, cmap=cmap3, vmin=-0.5, vmax=2.5, interpolation='nearest')
+cmap3.set_bad('white', alpha=0)          # ★ 关键：让无效区透明
+ax_cls.imshow(cls_map[::4, ::4], cmap=cmap3, vmin=-0.5, vmax=2.5, interpolation='nearest')
 ax_cls.set_title('三类下垫面空间分布', fontsize=13, fontweight='bold'); ax_cls.axis('off')
 patches_cls = [
     mpatches.Patch(color='#4CAF50', label=f'自然植被区 ({natural_pct:.1f}%)'),
@@ -344,16 +354,24 @@ print(f"    [图2] 三类分布  → {out2}")
 
 # 图3：汇流累积量（含★新增acc验证）
 fig3, ax3 = plt.subplots(figsize=(12, 8)); fig3.patch.set_alpha(0)
-sm_acc = imshow_masked(ax3, np.log1p(acc_arr), nodata_mask_full, 'Blues')
-river_vis = (acc_arr > 500) & ~nodata_mask_full
-ax3.imshow(np.where(river_vis, 1.0, np.nan), cmap='Reds', alpha=0.8, vmin=0, vmax=1)
+# 汇流背景（对数）
+im_acc, vmin_acc, vmax_acc = imshow_masked(ax3, np.log1p(acc_arr), city_vis, 'Blues')
+sm_acc = plt.cm.ScalarMappable(cmap=plt.get_cmap('Blues'),
+                               norm=mcolors.Normalize(vmin=vmin_acc, vmax=vmax_acc))
+sm_acc.set_array([])
+# 水系叠层
+river_vis = (acc_arr > 500) & city_vis   # 改用 city_vis
+river_show = np.where(river_vis, 1.0, np.nan)[::4, ::4]
+cmap_riv = plt.get_cmap('Reds').copy()
+cmap_riv.set_bad('white', alpha=0)
+ax3.imshow(river_show, cmap=cmap_riv, alpha=0.8, vmin=0, vmax=1, interpolation='nearest')
 ax3.set_title('汇流累积量（对数）+ 提取水系（红色，>500像元）\n'
               '★ acc.npy 已保存，供Step3 TWI计算',
               fontsize=13, fontweight='bold'); ax3.axis('off')
 plt.colorbar(sm_acc, ax=ax3, shrink=0.8, pad=0.02, label='log(acc+1)')
 ax3.text(0.02, 0.02,
          f"水系像元: {river_vis.sum():,} ({river_vis.sum()/valid_pixels*100:.2f}%)\n"
-         f"acc max={acc_arr[~nodata_mask_full].max():.0f}",
+         f"acc max={acc_arr[city_vis].max():.0f}",
          transform=ax3.transAxes, fontsize=10,
          bbox=dict(boxstyle='round', facecolor='white', alpha=0.3))
 plt.tight_layout()
