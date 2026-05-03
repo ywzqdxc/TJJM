@@ -305,17 +305,35 @@ fig.suptitle('Step 1 (v5.0)：北京市静态下垫面特征提取总览\n'
              '三类下垫面：城市建成区 | 山区裸岩区 | 自然植被区',
              fontsize=15, fontweight='bold', y=0.99)
 gs = GridSpec(2, 3, figure=fig, hspace=0.35, wspace=0.30)
+# ... 前面的代码不变 ...
 panels = [
-    (fig.add_subplot(gs[0,0]), dem_clean,  'terrain',   '① DEM高程(m)',         dem_stats),
-    (fig.add_subplot(gs[0,1]), slope_arr,  'RdYlGn_r',  '② 坡度(°)',            slope_stats),
-    (fig.add_subplot(gs[0,2]), hand_arr,   'Blues_r',   '③ HAND(m)',            hand_stats),
-    (fig.add_subplot(gs[1,0]), ks,         'YlOrRd',    '④ 饱和导水率Ks(mm/h)', ks_stats),
-    (fig.add_subplot(gs[1,1]), ths,        'BrBG',      '⑤ 饱和含水量θs',       ths_stats),
-    (fig.add_subplot(gs[1,2]), psi_abs,    'PuBu',      '⑥ 毛管吸力|Psi|(cm)',  psi_stats),
+    (fig.add_subplot(gs[0, 0]), dem_clean, 'terrain', '① DEM高程(m)', dem_stats),
+    (fig.add_subplot(gs[0, 1]), slope_arr, 'RdYlGn_r', '② 坡度(°)', slope_stats),
+    (fig.add_subplot(gs[0, 2]), hand_arr, 'Blues_r', '③ HAND(m)', hand_stats),
+    (fig.add_subplot(gs[1, 0]), ks, 'YlOrRd', '④ 饱和导水率Ks(mm/h)', ks_stats),
+    (fig.add_subplot(gs[1, 1]), ths, 'BrBG', '⑤ 饱和含水量θs', ths_stats),
+    (fig.add_subplot(gs[1, 2]), psi_abs, 'PuBu', '⑥ 毛管吸力|Psi|(cm)', psi_stats),
 ]
+
+# ================= 补上这个缺失的绘图循环 =================
+for ax, data, cmap, title, stats in panels:
+    # 调用你之前定义的 imshow_masked 函数将数据渲染到 ax 上
+    im, vmin, vmax = imshow_masked(ax, data, city_vis, cmap)
+    # 设置子图标题
+    ax.set_title(title, fontsize=12, fontweight='bold')
+    # 添加色标（Colorbar）
+    plt.colorbar(im, ax=ax, shrink=0.8, pad=0.04)
+
+    # 可选：把这一项的统计均值等信息打在子图左下角
+    stat_text = f"Mean: {stats['mean']:.2f}\nMax: {stats['max']:.2f}"
+    ax.text(0.02, 0.02, stat_text, transform=ax.transAxes, fontsize=8,
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.6))
+# ==========================================================
+
 plt.subplots_adjust(left=0.05, right=0.95, top=0.92, bottom=0.05)
 out1 = os.path.join(VIS_DIR, 'Step1_01_Overview.png')
-plt.savefig(out1, dpi=200, bbox_inches='tight', transparent=True); plt.close()
+plt.savefig(out1, dpi=200, bbox_inches='tight', transparent=True);
+plt.close()
 print(f"    [图1] 六图总览  → {out1}")
 
 # 图2：三类下垫面分布

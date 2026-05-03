@@ -364,31 +364,117 @@ print(f"  ✅ Fig4_KDE_ModelCompare.png")
 
 
 # ============================================================
-# 图5：LISA聚类图（从Step3加载）
+# 图5：LISA聚类图 + Moran's I 散点图（1×2 组合）
 # ============================================================
-print("[5/5] LISA聚类图...")
+print("[5/5] LISA聚类图 + Moran's I 散点图...")
 
-lisa_path = os.path.join(RISK_DIR, 'LISA_Matrix.npy')
+lisa_path    = os.path.join(RISK_DIR, 'LISA_Matrix.npy')
+scatter_path = os.path.join(RISK_DIR, 'LISA_Scatter_Data.npz')
+
 if not os.path.exists(lisa_path):
     print(f"  ⚠️  LISA_Matrix.npy未找到，跳过（请先运行Step3）")
 else:
     lisa_mat = np.load(lisa_path)
 
-    lisa_colors = ['#FFFFFF','#D7191C','#2C7BB6','#FDAE61','#ABD9E9']
-    cmap_lisa   = ListedColormap(lisa_colors); cmap_lisa.set_bad('white', 0.0)
+    # 加载散点图数据（Step3 v7.0+ 输出）
+    if os.path.exists(scatter_path):
+        npz      = np.load(scatter_path)
+        z_mat    = npz['z']
+        lag_mat  = npz['lag']
+        moran_I  = float(npz['moran_I'][0])
+    else:
+        print(f"  ⚠️  LISA_Scatter_Data.npz未找到，散点图将跳过（请先运行Step3 v7.0+）")
+        z_mat = lag_mat = None
+        moran_I = np.nan
 
-    fig5, ax5 = plt.subplots(figsize=(10, 8))
-    ax5.imshow(lisa_mat, cmap=cmap_lisa, interpolation='nearest')
-    ax5.axis('off')
+    lisa_colors = ['#FFFFFF', '#D7191C', '#2C7BB6', '#FDAE61', '#ABD9E9']
+    cmap_lisa   = ListedColormap(lisa_colors)
+    cmap_lisa.set_bad('white', 0.0)
 
-    llabels = ['不显著','H-H（极高脆弱聚集）','L-L（低脆弱安全区）',
-               'H-L（孤立高脆弱点）','L-H（被动低洼区）']
+    fig5, axes5 = plt.subplots(1, 2, figsize=(16, 7))
+    fig5.suptitle(f'北京市内涝综合脆弱性空间自相关分析（{best_model}模型）',
+                  fontsize=14, fontweight='bold', y=1.01)
+
+    # ── 左图：LISA 聚类地图 ──────────────────────────────────
+    ax_map = axes5[0]
+    ax_map.imshow(lisa_mat, cmap=cmap_lisa, vmin=0, vmax=4, interpolation='nearest')
+    ax_map.axis('off')
+    ax_map.set_title('(a) LISA 聚类图', fontsize=13, fontweight='bold', pad=10)
+
+    llabels  = ['不显著', 'H-H（极高脆弱聚集）', 'L-L（低脆弱安全区）',
+                'H-L（孤立高脆弱点）', 'L-H（被动低洼区）']
     patches5 = [mpatches.Patch(color=c, label=l)
                 for c, l in zip(lisa_colors, llabels)]
-    ax5.legend(handles=patches5, loc='lower right', fontsize=10, framealpha=0.9)
-    ax5.set_title(f'北京市内涝综合脆弱性 LISA 局部聚类图\n（{best_model}模型）',
-                   fontsize=13, fontweight='bold', pad=15)
-    fig5.savefig(os.path.join(OUT_DIR,'Fig5_LISA_Cluster.png'),
+    ax_map.legend(handles=patches5, loc='lower right', fontsize=9, framealpha=0.9)
+
+    # ── 右图：Moran's I 散点图 ───────────────────────────────
+    ax_sc = axes5[1]
+
+    if z_mat is not None:
+        # 提取有效像元（lisa_mat 不为 NaN 的位置）
+        valid_sc = ~np.isnan(lisa_mat)
+        z_vals   = z_mat[valid_sc].ravel().astype(np.float32)
+        lag_vals = lag_mat[valid_sc].ravel().astype(np.float32)
+        cat_vals = lisa_mat[valid_sc].ravel()   # 0=不显著, 1=HH, 2=LL, 3=HL, 4=LH
+
+        # 抽样（超过5万点时随机抽取，避免过密）
+        MAX_SC = 50000
+        if z_vals.size > MAX_SC:
+            idx_sc   = np.random.choice(z_vals.size, MAX_SC, replace=False)
+            z_vals   = z_vals[idx_sc]
+            lag_vals = lag_vals[idx_sc]
+            cat_vals = cat_vals[idx_sc]
+
+        # 散点颜色：类别0用浅灰，1-4与地图一致
+        sc_colors_map = {0: '#F0F0F0', 1: '#D7191C', 2: '#2C7BB6',
+                         3: '#FDAE61', 4: '#ABD9E9'}
+
+        # 先画不显著点（底层），再画显著点（顶层）
+        for cat, zorder, alpha in [(0, 1, 0.4), (1, 2, 0.7), (2, 2, 0.7),
+                                   (3, 2, 0.7), (4, 2, 0.7)]:
+            mask_c = (cat_vals == cat)
+            if mask_c.sum() == 0:
+                continue
+            ax_sc.scatter(z_vals[mask_c], lag_vals[mask_c],
+                          c=sc_colors_map[cat], s=4, linewidths=0,
+                          zorder=zorder, alpha=alpha)
+
+        # 辅助线
+        ax_sc.axhline(0, color='#888888', linewidth=0.8, linestyle='--', zorder=0)
+        ax_sc.axvline(0, color='#888888', linewidth=0.8, linestyle='--', zorder=0)
+
+        # 回归线 y = moran_I * x
+        x_range = np.array([z_vals.min(), z_vals.max()])
+        ax_sc.plot(x_range, moran_I * x_range, color='#333333',
+                   linewidth=1.8, linestyle='-', zorder=3, label=f"斜率 = Moran's I")
+
+        # 标注 Moran's I 值
+        ax_sc.text(0.05, 0.95, f"Moran's I = {moran_I:.3f}",
+                   transform=ax_sc.transAxes, fontsize=11, fontweight='bold',
+                   va='top', ha='left',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                             edgecolor='#AAAAAA', alpha=0.85))
+
+        ax_sc.set_xlabel('归一化脆弱性指数（去均值）', fontsize=11)
+        ax_sc.set_ylabel('归一化脆弱性指数滞后', fontsize=11)
+        ax_sc.set_title("(b) Moran's I 散点图", fontsize=13, fontweight='bold', pad=10)
+        ax_sc.grid(alpha=0.2)
+
+        # 图例（仅显著类别）
+        sc_labels = {1: 'H-H', 2: 'L-L', 3: 'H-L', 4: 'L-H'}
+        sc_patches = [mpatches.Patch(color=sc_colors_map[k], label=v)
+                      for k, v in sc_labels.items()]
+        sc_patches.insert(0, mpatches.Patch(color='#F0F0F0', label='不显著'))
+        ax_sc.legend(handles=sc_patches, loc='upper right', fontsize=9,
+                     framealpha=0.9, title='LISA类别')
+    else:
+        ax_sc.text(0.5, 0.5, 'LISA_Scatter_Data.npz\n未找到\n请重新运行Step3',
+                   ha='center', va='center', transform=ax_sc.transAxes,
+                   fontsize=12, color='#888888')
+        ax_sc.axis('off')
+
+    plt.tight_layout()
+    fig5.savefig(os.path.join(OUT_DIR, 'Fig5_LISA_Cluster.png'),
                  bbox_inches='tight', facecolor='white', dpi=200)
     plt.close()
     print(f"  ✅ Fig5_LISA_Cluster.png")

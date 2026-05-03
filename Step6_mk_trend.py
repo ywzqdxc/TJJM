@@ -261,128 +261,136 @@ print("  ✅ MK_Summary_Stats.csv")
 
 
 # ============================================================
-# 五、可视化
+# 五、可视化（学术出版级重构）
 # ============================================================
-print("\n[5/5] 生成可视化图像...")
+print("\n[5/5] 生成学术出版级可视化图像...")
 
-DS = 4   # 降采样因子
-
-def make_show(arr2d, nodata_val=-9999.0):
-    """降采样 + 无效值转NaN，用于imshow"""
-    d = arr2d[::DS, ::DS].astype(np.float32)
-    d = np.where(d == nodata_val, np.nan, d)
-    return d
-
-# ── 图1：趋势分类图
-fig1, ax1 = plt.subplots(figsize=(12, 8))
-tc_show = make_show(tc_grid, nodata_val=0)
-
-trend_colors = ['#BDBDBD',   # 0=无效/背景
-                '#D7191C',   # 1=显著上升（红）
-                '#F0F0F0',   # 2=无趋势（浅灰）
-                '#2C7BB6']   # 3=显著下降（蓝）
-cmap_tc = ListedColormap(trend_colors)
-cmap_tc.set_bad('white', 0.0)
-
-im1 = ax1.imshow(tc_show, cmap=cmap_tc, vmin=0, vmax=3,
-                  interpolation='nearest')
-ax1.axis('off')
-patches1 = [
-    mpatches.Patch(color='#D7191C', label='显著上升'),
-    mpatches.Patch(color='#F0F0F0', label='无显著趋势'),
-    mpatches.Patch(color='#2C7BB6', label='显著下降'),
-]
-ax1.legend(handles=patches1, loc='upper left', fontsize=11, framealpha=0.9)
-ax1.set_title(f'北京市城市内涝脆弱性趋势分类图（Mann-Kendall检验, 2012-2024）\n'
-               f'α={ALPHA}  双侧检验  T={T}年  完整像元{N:,}个',
-               fontsize=13, fontweight='bold', pad=15)
-fig1.savefig(os.path.join(VIS_DIR, 'MK_Trend_Map.png'),
-              dpi=200, bbox_inches='tight', facecolor='white')
-plt.close()
-print("  ✅ MK_Trend_Map.png")
-
-# ── 图2：Sen斜率图（发散色标，仅显著像元）
-fig2, ax2 = plt.subplots(figsize=(12, 8))
-
-# =========================================================
-# 【新增】：加载并生成严格的北京市行政边界掩膜
-# =========================================================
 import geopandas as gpd
-from rasterio.features import geometry_mask
 from shapely.ops import unary_union
-from shapely.geometry import mapping
+import matplotlib.colors as mcolors
 
-CITY_BOUNDARY_SHP = r'E:\Data\src\Beijing\北京市_市.shp'
-try:
-    # 加载 SHP 边界，并转换为与栅格相同的坐标系
-    city_gdf = gpd.read_file(CITY_BOUNDARY_SHP).to_crs(out_profile['crs'])
-    city_union = unary_union(city_gdf.geometry)
-    # 生成精确的布尔掩膜
-    city_vis = geometry_mask([mapping(city_union)], transform=out_profile['transform'],
-                             out_shape=(h, w), invert=True)
-    # 结合现有的 valid_mask
-    bg_mask = city_vis & valid_mask
-except Exception as e:
-    print(f"  ⚠️ 边界加载失败，使用默认矩形掩膜: {e}")
-    bg_mask = valid_mask
+# 1. 基础地理信息与比例尺参数
+with rasterio.open(DEM_PATH) as ref:
+    dst_bounds = ref.bounds
+    center_lat = (dst_bounds.top + dst_bounds.bottom) / 2.0
 
-# 1. 绘制精确的北京市浅灰色底图
-bg_grid = np.where(bg_mask, 1.0, np.nan)
-bg_show = make_show(bg_grid, nodata_val=np.nan)
-ax2.imshow(bg_show, cmap=ListedColormap(['#E5E5E5']), interpolation='nearest')
+extent = [dst_bounds.left, dst_bounds.right, dst_bounds.bottom, dst_bounds.top]
+total_x = dst_bounds.right - dst_bounds.left
+bar_km  = 30
+bar_deg = bar_km / (111.32 * np.cos(np.radians(center_lat)))
+bar_frac = bar_deg / total_x
 
-# 2. 加载并处理需要叠加的斜率数据
-sen_show = make_show(sen_grid, nodata_val=-9999.0)
+# 2. 绘图辅助函数
+def _clean_ax(ax, bounds, pad_ratio=0.02):
+    pad_x = (bounds.right - bounds.left) * pad_ratio
+    pad_y = (bounds.top - bounds.bottom) * pad_ratio
+    ax.set_xlim(bounds.left - pad_x, bounds.right + pad_x)
+    ax.set_ylim(bounds.bottom - pad_y, bounds.top + pad_y)
+    ax.set_xticks([]); ax.set_yticks([])
+    for sp in ax.spines.values(): sp.set_visible(False)
+    ax.set_facecolor('white')
 
-# 确定色标范围（基于95%分位数）
-sig_s_plot = sen_show[np.isfinite(sen_show)]
-if sig_s_plot.size > 10:
-    vmax_s = float(np.percentile(np.abs(sig_s_plot), 95))
-else:
-    vmax_s = 0.01
+def add_north_arrow(ax, x=0.92, y=0.88, size=0.08, fs=12):
+    ax.annotate('', xy=(x, y+size), xytext=(x, y), xycoords='axes fraction',
+                arrowprops=dict(arrowstyle='->', color='black', lw=2.0, mutation_scale=15))
+    ax.text(x, y+size+0.02, 'N', transform=ax.transAxes, ha='center', va='bottom',
+            fontsize=fs, fontweight='bold')
 
-# 3. 将彩色的斜率点精准叠加到底图上
-im2 = ax2.imshow(sen_show, cmap='RdBu_r', vmin=-vmax_s, vmax=vmax_s,
-                  interpolation='bilinear')
-ax2.axis('off')
-cbar2 = plt.colorbar(im2, ax=ax2, shrink=0.8, pad=0.02)
-cbar2.set_label("Sen's斜率（脆弱性/年）", fontsize=12)
-ax2.set_title(f"北京市城市内涝脆弱性 Sen's 斜率空间分布\n"
-               f"（仅显示MK显著像元，蓝=下降趋势，红=上升趋势）",
-               fontsize=13, fontweight='bold', pad=15)
-fig2.savefig(os.path.join(VIS_DIR, 'Sen_Slope_Map.png'),
-              dpi=200, bbox_inches='tight', facecolor='white')
+def add_scale_bar(ax, bar_frac, bar_km, bx0=0.60, by=0.05, fs=10):
+    bx1 = bx0 + bar_frac
+    ax.plot([bx0, bx1], [by, by], transform=ax.transAxes, color='black', lw=3, zorder=10)
+    for bx in [bx0, bx1]:
+        ax.plot([bx, bx], [by-0.01, by+0.01], transform=ax.transAxes, color='black', lw=2, zorder=10)
+    ax.text(bx0, by-0.025, '0', ha='center', va='top', transform=ax.transAxes, fontsize=fs)
+    ax.text(bx1, by-0.025, f'{bar_km} km', ha='center', va='top', transform=ax.transAxes, fontsize=fs)
+
+# 3. 加载行政边界
+CITY_SHP = r'E:\Data\src\Beijing\北京市_市.shp'
+DIST_SHP = r'E:\Data\src\Beijing\北京市_区.shp'
+
+city_gdf = gpd.read_file(CITY_SHP) if os.path.exists(CITY_SHP) else None
+dist_gdf = gpd.read_file(DIST_SHP) if os.path.exists(DIST_SHP) else None
+
+def add_boundaries(ax):
+    if dist_gdf is not None:
+        dist_gdf.boundary.plot(ax=ax, color='white', linewidth=0.7, linestyle='--', alpha=0.8, zorder=4)
+    if city_gdf is not None:
+        city_gdf.boundary.plot(ax=ax, color='black', linewidth=1.2, zorder=5)
+
+# 控制出图分辨率（1=最高精度原分辨率，2=平滑压缩降内存，建议出版用2）
+DS = 2
+
+# ── 图1：学术级 MK 趋势分类图 ─────────────────────────────────
+fig1, ax1 = plt.subplots(figsize=(11, 9))
+_clean_ax(ax1, dst_bounds)
+
+# 绘制浅灰色的北京市底板
+if city_gdf is not None:
+    city_gdf.plot(ax=ax1, color='#F2F3F4', zorder=1)
+add_boundaries(ax1)
+
+# 【核心修复】：严格剔除无效数据 (确保仅保留 1, 2, 3)
+tc_show = tc_grid[::DS, ::DS].astype(float)
+tc_show[~np.isin(tc_show, [1, 2, 3])] = np.nan
+tc_show_ma = np.ma.masked_invalid(tc_show) # 强制转为掩膜数组
+
+# 定义学术配色：1=红(上升), 2=浅灰(无趋势), 3=蓝(下降)
+cmap_tc = ListedColormap(['#E74C3C', '#F2F3F4', '#2C7BB6'])
+norm_tc = mcolors.BoundaryNorm([0.5, 1.5, 2.5, 3.5], 3)
+cmap_tc.set_bad(color='none') # 【核心修复】：确保无效区完全透明
+
+im1 = ax1.imshow(tc_show_ma, cmap=cmap_tc, norm=norm_tc, extent=extent, zorder=3, interpolation='nearest')
+
+patches1 = [
+    mpatches.Patch(color='#E74C3C', label='显著上升 (p<0.05)'),
+    mpatches.Patch(color='#F2F3F4', label='无显著趋势'),
+    mpatches.Patch(color='#2C7BB6', label='显著下降 (p<0.05)')
+]
+ax1.legend(handles=patches1, loc='upper left', fontsize=11, framealpha=0.95, edgecolor='#CCCCCC')
+
+add_north_arrow(ax1)
+add_scale_bar(ax1, bar_frac, bar_km)
+ax1.set_title(f'北京市城市内涝脆弱性趋势分类图（Mann-Kendall检验, 2012-2024）\n'
+              f'α={ALPHA}  双侧检验  T={T}年', fontsize=14, fontweight='bold', pad=15)
+
+fig1.savefig(os.path.join(VIS_DIR, 'MK_Trend_Map.png'), dpi=300, bbox_inches='tight', facecolor='white')
 plt.close()
-print("  ✅ Sen_Slope_Map.png")
+print("  ✅ MK_Trend_Map.png (学术高定版)")
 
-# ── 图3：Z分布直方图 + 显著性阈值线
-fig3, axes3 = plt.subplots(1, 2, figsize=(14, 6))
-z_thresh = sci_norm.ppf(1 - ALPHA / 2)
 
-axes3[0].hist(Z, bins=100, color='#4575b4', alpha=0.7, edgecolor='white')
-axes3[0].axvline( z_thresh, color='#d73027', linewidth=2, linestyle='--',
-                   label=f'+{z_thresh:.2f} (α={ALPHA}双侧)')
-axes3[0].axvline(-z_thresh, color='#d73027', linewidth=2, linestyle='--',
-                   label=f'-{z_thresh:.2f}')
-axes3[0].set_xlabel('Z统计量', fontsize=12)
-axes3[0].set_ylabel('像元数', fontsize=12)
-axes3[0].set_title('MK检验 Z统计量分布', fontsize=12, fontweight='bold')
-axes3[0].legend(fontsize=10)
-axes3[0].grid(alpha=0.3)
+# ── 图2：学术级 Sen's 斜率图 ─────────────────────────────────
+fig2, ax2 = plt.subplots(figsize=(11, 9))
+_clean_ax(ax2, dst_bounds)
 
-axes3[1].hist(sen_slope * 1000, bins=100, color='#d73027', alpha=0.7, edgecolor='white')
-axes3[1].axvline(0, color='black', linewidth=1.5)
-axes3[1].set_xlabel("Sen's斜率（×10⁻³/年）", fontsize=12)
-axes3[1].set_ylabel('像元数', fontsize=12)
-axes3[1].set_title("Sen's斜率分布（所有完整像元）", fontsize=12, fontweight='bold')
-axes3[1].grid(alpha=0.3)
+# 绘制浅灰色的北京市底板 (代表不显著区域)
+if city_gdf is not None:
+    city_gdf.plot(ax=ax2, color='#F2F3F4', zorder=1)
+add_boundaries(ax2)
 
-plt.suptitle("MK趋势检验统计量分布（北京市 2012-2024）", fontsize=14, fontweight='bold')
-plt.tight_layout()
-fig3.savefig(os.path.join(VIS_DIR, 'MK_Distribution.png'),
-              dpi=200, bbox_inches='tight', facecolor='white')
+sen_show = sen_grid[::DS, ::DS].astype(float)
+# 【核心修复】：将无数据区及未计算区转为 NaN
+sen_show[sen_show <= -999.0] = np.nan
+sen_show_ma = np.ma.masked_invalid(sen_show)
+
+# 确定色标极值 (95%分位数)，保证正负渐变色对称
+sig_s_plot = sen_show_ma.compressed() # 仅提取有效值计算极值
+vmax_s = float(np.percentile(np.abs(sig_s_plot), 95)) if sig_s_plot.size > 10 else 0.01
+
+im2 = ax2.imshow(sen_show_ma, cmap='RdBu_r', vmin=-vmax_s, vmax=vmax_s,
+                 extent=extent, zorder=3, interpolation='nearest')
+
+cbar = plt.colorbar(im2, ax=ax2, shrink=0.7, pad=0.03)
+cbar.set_label("Sen's斜率（变化速率 / 年）", fontsize=12)
+cbar.outline.set_linewidth(0.8)
+
+add_north_arrow(ax2)
+add_scale_bar(ax2, bar_frac, bar_km)
+ax2.set_title("北京市城市内涝脆弱性 Sen's 斜率空间分布\n（仅显示MK显著像元，蓝=下降趋势，红=上升趋势）",
+              fontsize=14, fontweight='bold', pad=15)
+
+fig2.savefig(os.path.join(VIS_DIR, 'Sen_Slope_Map.png'), dpi=300, bbox_inches='tight', facecolor='white')
 plt.close()
-print("  ✅ MK_Distribution.png")
+print("  ✅ Sen_Slope_Map.png (学术高定版)")
 
 
 # ============================================================
