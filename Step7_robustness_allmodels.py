@@ -427,7 +427,7 @@ print(f"\n  Bootstrap_AllModels.csv  ({len(df_boot)}行)")
 print("\n[4/4] 生成三模型稳健性对比图...")
 
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
-fig.suptitle('WLC / TOPSIS / VSC 三模型稳健性对比验证\n北京市洪涝脆弱性评估（2012-2024）',
+fig.suptitle('WLC / TOPSIS / VSC 三模型稳健性对比验证\n北京市洪涝风险评估（2012-2024）',
              fontsize=14, fontweight='bold', y=1.01)
 
 x      = np.arange(len(MODEL_NAMES))

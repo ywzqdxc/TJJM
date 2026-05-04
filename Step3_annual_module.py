@@ -354,7 +354,7 @@ ax1.fill_between(years_arr, means_arr - stds_arr, means_arr + stds_arr,
 ax1.fill_between(years_arr, p5_arr, p95_arr,
                   alpha=0.10, color='#FDAE61', label='P5-P95区间')
 ax1.plot(years_arr, means_arr, color='#D7191C', marker='o',
-          linewidth=2.5, markersize=8, label='全域脆弱性均值', zorder=5)
+          linewidth=2.5, markersize=8, label='全域风险均值', zorder=5)
 ax1.plot(years_arr, p95_arr, color='#E74C3C', linewidth=1.2,
           linestyle=':', marker='v', markersize=5, label='P95极值')
 
@@ -366,14 +366,14 @@ if valid_y.sum() >= 3:
     ax1.plot(years_arr, p(years_arr), 'k--', linewidth=1.5, alpha=0.6,
               label=f'线性趋势 ({z[0]:+.5f}/年)')
 
-ax1.set_ylabel('TOPSIS综合脆弱性指数', fontsize=12, fontweight='bold')
+ax1.set_ylabel('TOPSIS综合风险指数', fontsize=12, fontweight='bold')
 ax1.set_xlim(STUDY_YEARS[0] - 0.5, STUDY_YEARS[-1] + 0.5)
 ax1.set_ylim(0, 1.0)
 ax1.set_xticks(years_arr)
 ax1.set_xticklabels([str(y) for y in STUDY_YEARS], rotation=30, fontsize=9)
 ax1.legend(fontsize=9, loc='upper left', framealpha=0.9)
 ax1.grid(axis='y', alpha=0.3)
-ax1.set_title('北京市城市内涝综合脆弱性逐年演变（2012-2024）\n'
+ax1.set_title('北京市城市内涝综合风险逐年演变（2012-2024）\n'
                '（静态指标固定，动态指标：降雨量R、径流系数CR逐年更新）',
                fontsize=13, fontweight='bold', pad=10)
 

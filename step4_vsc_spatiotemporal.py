@@ -1,5 +1,5 @@
 """
-Step 4 (v6.0): VSC三维脆弱性时空计量分析与可视化
+Step 4 (v6.0): VSC三维风险时空计量分析与可视化
 ==================================================
 v6.0变化（相对v5.0）：
   1. 完全移除WDI依赖（不加载任何WDI_xx.npy文件）
@@ -45,7 +45,7 @@ OUT_DIR    = r'./Step_New/Visualization/Step4_VSC'
 os.makedirs(OUT_DIR, exist_ok=True)
 
 LEVEL_COLORS = ['#2ECC71', '#A8E063', '#F39C12', '#E74C3C', '#8B0000']
-LEVEL_NAMES  = ['极低脆弱', '低脆弱', '中脆弱', '高脆弱', '极高脆弱']
+LEVEL_NAMES  = ['极低风险', '低风险', '中风险', '高风险', '极高风险']
 STUDY_YEARS  = list(range(2012, 2025))
 
 print("=" * 70)
@@ -138,7 +138,7 @@ print("\n[1/5] 三模型空间对比图...")
 fig1, axes1 = plt.subplots(2, 2, figsize=(18, 14))
 
 # 主标题位置下移，同时调整子图间距
-fig1.suptitle(f'三模型脆弱性评估空间对比（北京市 2012-2024）\n最优模型：{best_model}',
+fig1.suptitle(f'三模型风险评估空间对比（北京市 2012-2024）\n最优模型：{best_model}',
                fontsize=15, fontweight='bold', y=0.98)
 
 # 手动控制子图之间的水平和垂直间距，以及左边留白（放竖排图例）
@@ -147,8 +147,8 @@ plt.subplots_adjust(left=0.12, right=0.92, top=0.90, bottom=0.08,
 
 # 所有子图共用的等级划分（参照您表格中的数值）
 level_bounds = [0.000, 0.049, 0.149, 0.284, 0.479, 1.000]
-level_labels = ['极低脆弱\n(0.00-0.05)', '低脆弱\n(0.05-0.15)',
-                '中脆弱\n(0.15-0.28)', '高脆弱\n(0.28-0.48)', '极高脆弱\n(0.48-1.00)']
+level_labels = ['极低风险\n(0.00-0.05)', '低风险\n(0.05-0.15)',
+                '中风险\n(0.15-0.28)', '高风险\n(0.28-0.48)', '极高风险\n(0.48-1.00)']
 
 # 每个模型对应的 colormap
 cmaps = {'TOPSIS': 'YlOrRd', 'WLC': 'YlOrBr', 'VSC': 'RdPu'}
@@ -296,7 +296,7 @@ E_base = float(np.nanmean(E_grid[valid_mask])) if E_grid is not None else 0.40
 S_base = float(np.nanmean(S_grid[valid_mask])) if S_grid is not None else 0.38
 C_base = float(np.nanmean(C_grid[valid_mask])) if C_grid is not None else 0.42
 
-# 用降雨量时序做调制（降雨大年→暴露度高→脆弱性高）
+# 用降雨量时序做调制（降雨大年→暴露度高→风险高）
 rain_norm_ts = np.array(rain_ts) / np.mean(rain_ts)
 
 E_ts = [E_base * r for r in rain_norm_ts]
@@ -321,7 +321,7 @@ ax.set_xticklabels([str(y) for y in STUDY_YEARS], rotation=30, fontsize=9)
 ax.set_ylim(0, 1.0)
 ax.legend(fontsize=10, frameon=True, loc='upper left')
 ax.grid(axis='y', alpha=0.3)
-plt.title('北京市内涝脆弱性三维分量（E/S/C）时序演变（2012-2024）',
+plt.title('北京市内涝风险三维分量（E/S/C）时序演变（2012-2024）',
            fontsize=13, fontweight='bold', pad=12)
 plt.tight_layout()
 fig3.savefig(os.path.join(OUT_DIR,'Fig3_ESC_Trend.png'), facecolor='white', dpi=200)
@@ -350,12 +350,12 @@ for m, color in model_colors.items():
                 color=color, label=label_str,
                 linestyle=model_styles[m], bw_adjust=1.5, ax=ax4)
 
-ax4.set_xlabel('综合脆弱性指数（归一化）', fontsize=12)
+ax4.set_xlabel('综合风险指数（归一化）', fontsize=12)
 ax4.set_ylabel('概率密度', fontsize=12)
 ax4.set_xlim(0, 1.0)
 ax4.legend(fontsize=11, frameon=True)
 ax4.grid(axis='y', alpha=0.3)
-plt.title('三种风险评价模型脆弱性得分分布对比\n（核密度估计，20万像元抽样）',
+plt.title('三种风险评价模型风险得分分布对比\n（核密度估计，20万像元抽样）',
            fontsize=13, fontweight='bold')
 plt.tight_layout()
 fig4.savefig(os.path.join(OUT_DIR,'Fig4_KDE_ModelCompare.png'), facecolor='white', dpi=200)
@@ -392,7 +392,7 @@ else:
     cmap_lisa.set_bad('white', 0.0)
 
     fig5, axes5 = plt.subplots(1, 2, figsize=(16, 7))
-    fig5.suptitle(f'北京市内涝综合脆弱性空间自相关分析（{best_model}模型）',
+    fig5.suptitle(f'北京市内涝综合风险空间自相关分析（{best_model}模型）',
                   fontsize=14, fontweight='bold', y=1.01)
 
     # ── 左图：LISA 聚类地图 ──────────────────────────────────
@@ -401,8 +401,8 @@ else:
     ax_map.axis('off')
     ax_map.set_title('(a) LISA 聚类图', fontsize=13, fontweight='bold', pad=10)
 
-    llabels  = ['不显著', 'H-H（极高脆弱聚集）', 'L-L（低脆弱安全区）',
-                'H-L（孤立高脆弱点）', 'L-H（被动低洼区）']
+    llabels  = ['不显著', 'H-H（极高风险聚集）', 'L-L（低风险安全区）',
+                'H-L（孤立高风险点）', 'L-H（被动低洼区）']
     patches5 = [mpatches.Patch(color=c, label=l)
                 for c, l in zip(lisa_colors, llabels)]
     ax_map.legend(handles=patches5, loc='lower right', fontsize=9, framealpha=0.9)
@@ -455,8 +455,8 @@ else:
                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
                              edgecolor='#AAAAAA', alpha=0.85))
 
-        ax_sc.set_xlabel('归一化脆弱性指数（去均值）', fontsize=11)
-        ax_sc.set_ylabel('归一化脆弱性指数滞后', fontsize=11)
+        ax_sc.set_xlabel('归一化风险指数（去均值）', fontsize=11)
+        ax_sc.set_ylabel('归一化风险指数滞后', fontsize=11)
         ax_sc.set_title("(b) Moran's I 散点图", fontsize=13, fontweight='bold', pad=10)
         ax_sc.grid(alpha=0.2)
 

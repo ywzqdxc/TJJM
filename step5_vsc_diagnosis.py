@@ -1,5 +1,5 @@
 """
-Step 5 (v6.0): VSC三维脆弱性驱动因子统计差异诊断
+Step 5 (v6.0): VSC三维风险驱动因子统计差异诊断
 ==================================================
 v6.0核心变化（相对v5.0）：
   1. 读取 Risk_Score_Optimal.tif / Risk_Level_Optimal.tif
@@ -39,14 +39,14 @@ VIS_DIR    = r'./Step_New/Visualization/Step5_VSC'
 STAT_DIR   = r'./Step_New/Step5_Statistics'
 for d in [VIS_DIR, STAT_DIR]: os.makedirs(d, exist_ok=True)
 
-# ★ 小提琴图抽样上限（每个脆弱性等级的最大绘图样本数）
+# ★ 小提琴图抽样上限（每个风险等级的最大绘图样本数）
 MAX_SAMPLES = 20000
 
-LEVEL_NAMES  = ['极低脆弱', '低脆弱', '中脆弱', '高脆弱', '极高脆弱']
+LEVEL_NAMES  = ['极低风险', '低风险', '中风险', '高风险', '极高风险']
 LEVEL_COLORS = ['#2ECC71', '#A8E063', '#F39C12', '#E74C3C', '#8B0000']
 
 print("=" * 70)
-print("Step 5 (v6.0): VSC三维脆弱性驱动因子诊断")
+print("Step 5 (v6.0): VSC三维风险驱动因子诊断")
 print(f"★ 小提琴图抽样优化: MAX_SAMPLES={MAX_SAMPLES}/等级")
 print("  KW检验: 全量数据 | 绘图: 抽样渲染（统计结论不变）")
 print("=" * 70)
@@ -207,7 +207,9 @@ def violin_panel(cols_to_plot, df_full, kw_results, title, out_path, nrows, ncol
                               figsize=(ncols*4.5, nrows*5.5),
                               facecolor='white')
     fig.suptitle(title, fontsize=12, fontweight='bold', y=0.99)
-    axes_list = list(axes.flat) if hasattr(axes, 'flat') else [axes]
+    # BUG-1修复：nrows=1时subplots返回1D数组，nrows=ncols=1时返回单个Axes，
+    # 统一用np.atleast_1d展平，确保axes_list始终是可下标访问的列表
+    axes_list = list(np.array(axes).flat)
 
     # 准备全局图例的句柄（稍后使用）
     global_patches = [mpatches.Patch(facecolor=c, alpha=0.75, label=n)
@@ -261,7 +263,7 @@ def violin_panel(cols_to_plot, df_full, kw_results, title, out_path, nrows, ncol
     # ★ 在整个图形右侧添加统一的图例
     fig.legend(handles=global_patches, loc='center right',
                fontsize=8, framealpha=0.9,
-               title='脆弱性等级', title_fontsize=9,
+               title='风险等级', title_fontsize=9,
                bbox_to_anchor=(1.02, 0.5))      # 紧贴右侧居中
 
     plt.tight_layout(rect=[0, 0, 0.92, 0.97])    # 右侧留出空间给图例
@@ -274,7 +276,7 @@ raw_cols = [c for c in list(ind_arrays.keys()) if c in df_full.columns]
 out_5a = os.path.join(VIS_DIR, 'Step5_KW_Violin_Raw.png')
 fig5a = violin_panel(
     raw_cols, df_full, kw_results,
-    title=(f'VSC内涝脆弱性10指标分布差异诊断（{best_model}模型 | 北京市 2012-2024）\n'
+    title=(f'VSC内涝风险10指标分布差异诊断（{best_model}模型 | 北京市 2012-2024）\n'
            f'★ KW检验基于全量数据，小提琴图每等级抽样≤{MAX_SAMPLES}加速渲染'),
     out_path=out_5a, nrows=2, ncols=5
 )
@@ -288,7 +290,7 @@ if dim_cols:
     out_5b = os.path.join(VIS_DIR, 'Step5_KW_Violin_ESC.png')
     fig5b = violin_panel(
         dim_cols, df_full, kw_results,
-        title=f'VSC三维分量（E/S/C）在不同脆弱性等级下的分布差异（{best_model}模型）',
+        title=f'VSC三维分量（E/S/C）在不同风险等级下的分布差异（{best_model}模型）',
         out_path=out_5b, nrows=1, ncols=3
     )
     fig5b.savefig(out_5b, dpi=200, bbox_inches='tight', facecolor='white')
@@ -310,7 +312,7 @@ if all(c in df_full.columns for c in ['暴露度E','敏感性S','应对不足C']
     df_full['S_flag'] = (df_full['敏感性S']   > S_thr).astype(int)
     df_full['C_flag'] = (df_full['应对不足C'] > C_thr).astype(int)
 
-    TYPE_ORDER  = ['O（弱综合型）','E（暴露致脆）','S（敏感致脆）','C（应对不足）',
+    TYPE_ORDER  = ['O（弱综合型）','E（暴露致险）','S（敏感致险）','C（应对不足）',
                    'ES（暴露-敏感）','EC（暴露-应对）','SC（敏感-应对）','ESC（强综合型）']
     TYPE_COLORS = ['#95A5A6','#E74C3C','#F39C12','#3498DB',
                    '#8E44AD','#E67E22','#2ECC71','#1ABC9C']
@@ -320,8 +322,8 @@ if all(c in df_full.columns for c in ['暴露度E','敏感性S','应对不足C']
         n = e + s + c
         if n==0: return 'O（弱综合型）'
         if n==1:
-            if e: return 'E（暴露致脆）'
-            if s: return 'S（敏感致脆）'
+            if e: return 'E（暴露致险）'
+            if s: return 'S（敏感致险）'
             return 'C（应对不足）'
         if n==2:
             if not e: return 'SC（敏感-应对）'
@@ -354,7 +356,7 @@ if all(c in df_full.columns for c in ['暴露度E','敏感性S','应对不足C']
 
     # 致脆类型图（饼图 + 堆叠柱）
     fig6, axes6 = plt.subplots(1, 2, figsize=(16, 8), facecolor='white')
-    fig6.suptitle(f'北京市内涝脆弱性致脆类型分析（{best_model}模型，VSC三维框架）',
+    fig6.suptitle(f'北京市内涝风险致险类型分析（{best_model}模型，VSC三维框架）',
                    fontsize=13, fontweight='bold')
 
     cnts = [df_full['VulnType'].value_counts().get(t,0) for t in TYPE_ORDER]
@@ -388,7 +390,7 @@ if all(c in df_full.columns for c in ['暴露度E','敏感性S','应对不足C']
     axes6[1].set_xticklabels(LEVEL_NAMES, rotation=20, fontsize=9, ha='right')
     axes6[1].set_ylabel('类型占比 (%)', fontsize=11)
     axes6[1].set_ylim(0,105)
-    axes6[1].set_title('各脆弱等级内致脆类型构成', fontsize=12, fontweight='bold')
+    axes6[1].set_title('各风险等级内致险类型构成', fontsize=12, fontweight='bold')
     axes6[1].legend(loc='upper right', fontsize=7, framealpha=0.9, ncol=2)
     axes6[1].grid(axis='y', alpha=0.3)
 

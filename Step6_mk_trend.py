@@ -61,7 +61,7 @@ print("=" * 70)
 # ============================================================
 # 一、加载基准信息与逐年数据
 # ============================================================
-print("\n[1/5] 加载基准网格与逐年脆弱性数据...")
+print("\n[1/5] 加载基准网格与逐年风险数据...")
 
 with rasterio.open(DEM_PATH) as ref:
     h, w         = ref.height, ref.width
@@ -71,7 +71,7 @@ out_profile.update(dtype=rasterio.float32, count=1, nodata=-9999.0, compress='de
 nodata_mask = np.load(os.path.join(STATIC_DIR, 'nodata_mask.npy')).astype(bool)
 valid_mask  = ~nodata_mask
 
-# 加载逐年脆弱性栅格
+# 加载逐年风险栅格
 T = len(STUDY_YEARS)
 year_arrays = []
 missing_years = []
@@ -350,7 +350,7 @@ ax1.legend(handles=patches1, loc='upper left', fontsize=11, framealpha=0.95, edg
 
 add_north_arrow(ax1)
 add_scale_bar(ax1, bar_frac, bar_km)
-ax1.set_title(f'北京市城市内涝脆弱性趋势分类图（Mann-Kendall检验, 2012-2024）\n'
+ax1.set_title(f'北京市城市内涝风险趋势分类图（Mann-Kendall检验, 2012-2024）\n'
               f'α={ALPHA}  双侧检验  T={T}年', fontsize=14, fontweight='bold', pad=15)
 
 fig1.savefig(os.path.join(VIS_DIR, 'MK_Trend_Map.png'), dpi=300, bbox_inches='tight', facecolor='white')
@@ -385,7 +385,7 @@ cbar.outline.set_linewidth(0.8)
 
 add_north_arrow(ax2)
 add_scale_bar(ax2, bar_frac, bar_km)
-ax2.set_title("北京市城市内涝脆弱性 Sen's 斜率空间分布\n（仅显示MK显著像元，蓝=下降趋势，红=上升趋势）",
+ax2.set_title("北京市城市内涝风险 Sen's 斜率空间分布\n（仅显示MK显著像元，蓝=下降趋势，红=上升趋势）",
               fontsize=14, fontweight='bold', pad=15)
 
 fig2.savefig(os.path.join(VIS_DIR, 'Sen_Slope_Map.png'), dpi=300, bbox_inches='tight', facecolor='white')
