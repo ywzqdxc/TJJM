@@ -99,16 +99,49 @@ def _clean_ax(ax, bounds, pad=0.01):
         sp.set_visible(False)
     ax.set_facecolor('white')
 
+def clip_imshow(im_obj, ax, city_gdf):
+    """用城市边界多边形裁剪 imshow，避免颜色溢出到矩形 extent 之外。"""
+    if city_gdf is None:
+        return
+    from matplotlib.patches import PathPatch
+    from matplotlib.path import Path
+    import shapely.ops
+    # 合并所有几何为单一多边形
+    merged = shapely.ops.unary_union(city_gdf.geometry)
+    # 转为 matplotlib Path
+    def _geom_to_path(geom):
+        from shapely.geometry import MultiPolygon, Polygon
+        polys = list(geom.geoms) if geom.geom_type == 'MultiPolygon' else [geom]
+        verts, codes = [], []
+        for poly in polys:
+            ext = np.array(poly.exterior.coords)
+            verts.append(ext); codes += [Path.MOVETO] + [Path.LINETO]*(len(ext)-2) + [Path.CLOSEPOLY]
+            for hole in poly.interiors:
+                h = np.array(hole.coords)
+                verts.append(h); codes += [Path.MOVETO] + [Path.LINETO]*(len(h)-2) + [Path.CLOSEPOLY]
+        return Path(np.vstack(verts), codes)
+    path = _geom_to_path(merged)
+    patch = PathPatch(path, transform=ax.transData)
+    im_obj.set_clip_path(patch)
+
 from matplotlib.lines import Line2D
 
-def add_circle_legend(ax, colors, labels, title, loc='upper left'):
-    """仿 Step 3 的圆形离散图例"""
-    handles = [Line2D([0], [0], marker='o', color='w',
-                      markerfacecolor=c, markersize=10,
-                      markeredgecolor='black', markeredgewidth=0.5)
+def add_circle_legend(ax, colors, labels, title, loc='upper left',
+                       fontsize=8.5, title_fs=9.5, ms=100, breaks=None):
+    """仿 Step3 的圆形离散图例（scatter marker='o'，无框）。
+    若传入 breaks（长度=len(colors)+1），则每个标签后附加 (lo~hi) 数值范围。"""
+    if breaks is not None and len(breaks) == len(colors) + 1:
+        fmt_labels = [f'{lbl}({breaks[i]:.3f}~{breaks[i+1]:.3f})'
+                      for i, lbl in enumerate(labels)]
+    else:
+        fmt_labels = labels
+    handles = [plt.scatter([], [], c=[c], s=ms, marker='o',
+                           edgecolors='#777777', linewidths=0.5)
                for c in colors]
-    ax.legend(handles, labels, loc=loc, title=title,
-              fontsize=8, title_fontsize=9, framealpha=0.8, edgecolor='#CCCCCC')
+    ax.legend(handles, fmt_labels, loc=loc, title=title,
+              title_fontsize=title_fs, fontsize=fontsize,
+              frameon=False, handletextpad=0.6,
+              labelspacing=0.55, borderpad=0.3)
 
 def add_north(ax, x=0.92, y=0.86, size=0.07, fs=11):
     ax.annotate('', xy=(x, y + size), xytext=(x, y), xycoords='axes fraction',
@@ -193,18 +226,22 @@ ax1l = fig1.add_subplot(gs1[0, 0])
 if city_gdf is not None:
     city_gdf.plot(ax=ax1l, color='#F5F5F5', zorder=1)
 add_boundaries(ax1l, city_gdf, dist_gdf)
+rain_circle_colors = ['#C6DBEF', '#6BAED6', '#2171B5', '#08519C', '#08306B']
+rain_circle_labels = ['极低', '低', '中', '高', '极高']
 if rain_mean is not None:
     rm_show = ds_arr(rain_mean, valid_mask)
+    vlo1 = np.nanpercentile(rm_show, 2)
+    vhi1 = np.nanpercentile(rm_show, 98)
     im = ax1l.imshow(rm_show, cmap=masked_cmap('Blues'), extent=extent,
-                     vmin=np.nanpercentile(rm_show, 2),
-                     vmax=np.nanpercentile(rm_show, 98), zorder=3,
+                     vmin=vlo1, vmax=vhi1, zorder=3,
                      interpolation='nearest')
-    cb = plt.colorbar(im, ax=ax1l, shrink=0.75, pad=0.03)
-    cb.set_label('汛期累积降雨量 (mm)', fontsize=10)
-    cb.outline.set_linewidth(0.6)
+    clip_imshow(im, ax1l, city_gdf)
+    # 5 等分断点（基于实际 vlo/vhi）
+    rain_breaks = np.linspace(vlo1, vhi1, 6)
+    add_circle_legend(ax1l, rain_circle_colors, rain_circle_labels,
+                      '降雨量等级 (mm)', loc='lower right', breaks=rain_breaks)
 _clean_ax(ax1l, bounds)
 add_north(ax1l)
-add_scale(ax1l, bounds)
 ax1l.set_title('(a) 多年平均汛期降雨量空间分布', fontsize=11, fontweight='bold', pad=8)
 
 # 右：逐年柱状 + 趋势线
@@ -281,7 +318,6 @@ if cr_mean is not None:
 
 _clean_ax(ax2l, bounds)
 add_north(ax2l)
-add_scale(ax2l, bounds)
 ax2l.set_title('(a) 多年平均地表径流系数空间分布', fontsize=11, fontweight='bold', pad=8)
 
 # 右：三类下垫面空间图 + 饼图嵌入
@@ -335,7 +371,6 @@ if urban_mask is not None and rock_mask is not None and nat_mask is not None:
 
 _clean_ax(ax2r, bounds)
 add_north(ax2r)
-add_scale(ax2r, bounds)
 ax2r.set_title('(b) 三类下垫面空间分布', fontsize=11, fontweight='bold', pad=8)
 
 fig2.savefig(os.path.join(OUT_DIR, 'Fig2_Runoff_LandCover.png'),
@@ -396,9 +431,8 @@ for ax, (data, cmap_name, cbar_label, title) in zip(axes3, panels3):
     _clean_ax(ax, bounds)
     ax.set_title(title, fontsize=10.5, fontweight='bold', pad=6)
 
-# 仅第一张加指北针和比例尺
+# 仅第一张加指北针
 add_north(axes3[0], x=0.88, y=0.84)
-add_scale(axes3[0], bounds, bar_km=30, bx0=0.55, by=0.05)
 
 # 叠加水系（在HAND子图上）
 if acc_arr is not None:
@@ -444,20 +478,24 @@ for ax in axes4:
         city_gdf.plot(ax=ax, color='#F5F5F5', zorder=1)
     add_boundaries(ax, city_gdf, dist_gdf)
 
-# 左：核密度连续面
+# 左：核密度连续面 + 圆圈图例（含数值范围）
 ax4l = axes4[0]
+wl_dens_colors = ['#FFFFB2', '#FECC5C', '#FD8D3C', '#F03B20', '#BD0026']
+wl_dens_labels = ['极低密度', '低密度', '中密度', '高密度', '极高密度']
+wl_dens_breaks = None
 if wl_density is not None:
     wd_show = ds_arr(wl_density, valid_mask)
     wd_show_masked = np.ma.masked_where(~np.isfinite(wd_show) | (wd_show < 0.001), wd_show)
+    _vmax4 = np.nanpercentile(wd_show, 98)
     im4 = ax4l.imshow(wd_show_masked, cmap=masked_cmap('YlOrRd'), extent=extent,
-                      vmin=0, vmax=np.nanpercentile(wd_show, 98),
+                      vmin=0, vmax=_vmax4,
                       zorder=3, interpolation='nearest')
-    cb4 = plt.colorbar(im4, ax=ax4l, shrink=0.75, pad=0.03)
-    cb4.set_label('归一化核密度', fontsize=10)
-    cb4.outline.set_linewidth(0.6)
+    clip_imshow(im4, ax4l, city_gdf)
+    wl_dens_breaks = np.linspace(0, _vmax4, 6)
 _clean_ax(ax4l, bounds)
 add_north(ax4l)
-add_scale(ax4l, bounds)
+add_circle_legend(ax4l, wl_dens_colors, wl_dens_labels, '积水点核密度等级',
+                  loc='lower right', breaks=wl_dens_breaks)
 ax4l.set_title('(a) 历史积水点核密度空间分布', fontsize=11, fontweight='bold', pad=8)
 
 # 右：散点位置 + 逐年数量柱状（若无点数据则改为核密度透明叠加）
@@ -479,9 +517,11 @@ if wl_pts is not None and len(wl_pts) > 0:
         ax4r.scatter(sub['lon'], sub['lat'], s=6, color=yr_color[yr],
                      alpha=0.65, linewidths=0, zorder=5, label=str(yr))
 
-    ax4r.legend(title='年份', fontsize=7, title_fontsize=8,
-                loc='lower left', framealpha=0.9, ncol=2,
-                markerscale=2.0, handletextpad=0.3)
+    # 年份图例放到图b右侧（图外）
+    yr_legend = ax4r.legend(title='年份', fontsize=7, title_fontsize=8,
+                             loc='center left', bbox_to_anchor=(1.01, 0.5),
+                             framealpha=0.9, ncol=1,
+                             markerscale=2.0, handletextpad=0.3)
     n_total_pts = len(wl_pts)
     ax4r.text(0.03, 0.97,
               f'积水点总数: {n_total_pts:,}\n年份数: {len(years_uniq)}',
@@ -505,7 +545,6 @@ else:
 
 _clean_ax(ax4r, bounds)
 add_north(ax4r)
-add_scale(ax4r, bounds)
 
 fig4.savefig(os.path.join(OUT_DIR, 'Fig4_Waterlogging_Points.png'),
              dpi=300, bbox_inches='tight', facecolor='white')
@@ -543,18 +582,22 @@ ax5l = fig5.add_subplot(gs5[0, 0])
 if city_gdf is not None:
     city_gdf.plot(ax=ax5l, color='#F5F5F5', zorder=1)
 add_boundaries(ax5l, city_gdf, dist_gdf)
+pop_circle_colors = ['#FDE0DD', '#FA9FB5', '#F768A1', '#C51B8A', '#7A0177']
+pop_circle_labels = ['极低', '低', '中', '高', '极高']
+pop_circle_breaks = None
 if pop_mean is not None:
     pop_show = ds_arr(pop_mean, valid_mask)
+    _vlo5 = np.nanpercentile(pop_show, 2)
+    _vhi5 = np.nanpercentile(pop_show, 98)
     im5 = ax5l.imshow(pop_show, cmap=masked_cmap('RdPu'), extent=extent,
-                      vmin=np.nanpercentile(pop_show, 2),
-                      vmax=np.nanpercentile(pop_show, 98),
+                      vmin=_vlo5, vmax=_vhi5,
                       zorder=3, interpolation='nearest')
-    cb5 = plt.colorbar(im5, ax=ax5l, shrink=0.75, pad=0.03)
-    cb5.set_label('归一化人口密度', fontsize=10)
-    cb5.outline.set_linewidth(0.6)
+    clip_imshow(im5, ax5l, city_gdf)
+    pop_circle_breaks = np.linspace(_vlo5, _vhi5, 6)
+    add_circle_legend(ax5l, pop_circle_colors, pop_circle_labels,
+                      '人口密度等级', loc='lower right', breaks=pop_circle_breaks)
 _clean_ax(ax5l, bounds)
 add_north(ax5l)
-add_scale(ax5l, bounds)
 ax5l.set_title('(a) 多年平均人口密度空间分布', fontsize=11, fontweight='bold', pad=8)
 
 # 右：逐年折线
@@ -594,36 +637,41 @@ print("[Fig6] 应急设施核密度三图联排...")
 
 poi_configs6 = [
     ('shelter_density_30m.tif',     'copper',  '应急避难场所密度',
-     '(a) 应急避难场所核密度'),
+     '(a) 应急避难场所核密度',
+     ['#FFF5F0', '#FCBBA1', '#FC8D59', '#D7301F', '#7F0000']),
     ('hospital_density_30m.tif',    'PuBu',    '综合医院密度',
-     '(b) 综合医院核密度'),
+     '(b) 综合医院核密度',
+     ['#F7FBFF', '#C6DBEF', '#6BAED6', '#2171B5', '#084594']),
     ('firestation_density_30m.tif', 'BuPu',    '消防救援站密度',
-     '(c) 消防救援站核密度'),
+     '(c) 消防救援站核密度',
+     ['#F7FCFD', '#BFD3E6', '#8C96C6', '#8856A7', '#810F7C']),
 ]
+_poi_density_labels = ['极低密度', '低密度', '中密度', '高密度', '极高密度']
 
 fig6, axes6 = plt.subplots(1, 3, figsize=(21, 7), facecolor='white')
 fig6.suptitle('（三）应急设施数据预处理：POI高斯核密度估计\n'
               '（GCJ-02→WGS84坐标转换，Silverman带宽，30m栅格）',
               fontsize=13, fontweight='bold')
 
-for ax, (fname, cmap_name, cbar_label, title) in zip(axes6, poi_configs6):
+for idx, (ax, (fname, cmap_name, cbar_label, title, poi_colors)) in enumerate(zip(axes6, poi_configs6)):
     data = load_tif(os.path.join(EXT_DIR, fname))
-    if city_gdf is not None:
-        city_gdf.plot(ax=ax, color='#F5F5F5', zorder=1)
-    add_boundaries(ax, city_gdf, dist_gdf)
+    # 子图(b)(c)画区县边界白色虚线 + 城市黑色实线；子图(a)只画区县白虚线，不画黑色城市轮廓
+    if dist_gdf is not None:
+        dist_gdf.boundary.plot(ax=ax, color='white', linewidth=0.6,
+                               linestyle='--', alpha=0.8, zorder=4)
+    if idx > 0 and city_gdf is not None:
+        city_gdf.boundary.plot(ax=ax, color='#333333', linewidth=1.2, zorder=5)
 
+    _vmax6 = None
     if data is not None:
         d_show = ds_arr(data, valid_mask)
         d_masked = np.ma.masked_where(
             ~np.isfinite(d_show) | (d_show < np.nanpercentile(d_show, 5)), d_show)
+        _vmax6 = np.nanpercentile(d_show, 98)
         im6 = ax.imshow(d_masked, cmap=masked_cmap(cmap_name), extent=extent,
-                        vmin=0, vmax=np.nanpercentile(d_show, 98),
+                        vmin=0, vmax=_vmax6,
                         zorder=3, interpolation='nearest')
-        cb6 = plt.colorbar(im6, ax=ax, shrink=0.75, pad=0.03,
-                           orientation='horizontal')
-        cb6.set_label(cbar_label, fontsize=9)
-        cb6.outline.set_linewidth(0.6)
-        cb6.ax.tick_params(labelsize=8)
+        clip_imshow(im6, ax, city_gdf)
 
         v6 = data[valid_mask & np.isfinite(data)]
         n_nonzero = int((v6 > 0.01).sum())
@@ -633,11 +681,13 @@ for ax, (fname, cmap_name, cbar_label, title) in zip(axes6, poi_configs6):
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
                           alpha=0.85, edgecolor='#AAAAAA'))
 
+    poi_breaks = np.linspace(0, _vmax6, 6) if _vmax6 is not None else None
+    add_circle_legend(ax, poi_colors, _poi_density_labels, cbar_label,
+                      loc='lower right', breaks=poi_breaks)
     _clean_ax(ax, bounds)
     ax.set_title(title, fontsize=10.5, fontweight='bold', pad=6)
 
 add_north(axes6[2])
-add_scale(axes6[2], bounds, bx0=0.55)
 
 fig6.tight_layout()
 fig6.savefig(os.path.join(OUT_DIR, 'Fig6_Emergency_Facilities.png'),
@@ -660,8 +710,6 @@ fig7.suptitle('（四）数据对齐：全域有效像元掩码与10指标数据
               fontsize=13, fontweight='bold')
 
 ax7l = fig7.add_subplot(gs7[0, 0])
-if city_gdf is not None:
-    city_gdf.plot(ax=ax7l, color='#EEEEEE', zorder=1)
 add_boundaries(ax7l, city_gdf, dist_gdf)
 
 valid_show = valid_mask[::DS, ::DS].astype(float)
@@ -669,13 +717,37 @@ valid_show = valid_mask[::DS, ::DS].astype(float)
 cmap_mask = ListedColormap(['#FFFFFF', '#BDBDBD', '#2CA25F'])
 cmap_mask.set_bad('white', alpha=0)
 
-# 构建三值图：0=边界外，1=nodata，2=有效
-nodata_show = nodata_mask[::DS, ::DS]
-mask_vis = np.zeros_like(valid_show, dtype=np.float32)
-mask_vis[:] = np.nan        # 边界外透明
-# 找城市掩膜（用nodata_mask取反即近似）
-mask_vis[~nodata_show] = 1  # 无效像元（边界内但nodata）
-mask_vis[valid_show.astype(bool)] = 2  # 有效像元
+# 构建三值图：NaN=边界外，1=nodata（灰），2=有效（绿）
+# 使用 city_gdf 光栅化真正确定哪些像元在北京市边界内
+mask_vis = np.full(valid_show.shape, np.nan, dtype=np.float32)
+if city_gdf is not None:
+    try:
+        from rasterio.features import rasterize
+        from rasterio.transform import from_bounds
+        ds_h, ds_w = valid_show.shape
+        ds_transform = from_bounds(bounds.left, bounds.bottom,
+                                   bounds.right, bounds.top, ds_w, ds_h)
+        city_raster = rasterize(
+            [(geom, 1) for geom in city_gdf.geometry],
+            out_shape=(ds_h, ds_w),
+            transform=ds_transform,
+            fill=0, dtype=np.uint8
+        ).astype(bool)
+        # 城市内所有像元默认标为1（灰=nodata）
+        mask_vis[city_raster] = 1
+        # 有效像元覆盖为2（绿）
+        mask_vis[valid_show.astype(bool) & city_raster] = 2
+    except Exception:
+        # 降级：用nodata_mask兜底
+        nodata_show = nodata_mask[::DS, ::DS]
+        city_inside = nodata_show | valid_show.astype(bool)
+        mask_vis[city_inside] = 1
+        mask_vis[valid_show.astype(bool)] = 2
+else:
+    nodata_show = nodata_mask[::DS, ::DS]
+    city_inside = nodata_show | valid_show.astype(bool)
+    mask_vis[city_inside] = 1
+    mask_vis[valid_show.astype(bool)] = 2
 
 ax7l.imshow(mask_vis, cmap=cmap_mask, extent=extent,
             vmin=0, vmax=2, zorder=3, interpolation='nearest')
@@ -697,7 +769,6 @@ ax7l.text(0.97, 0.97,
 
 _clean_ax(ax7l, bounds)
 add_north(ax7l)
-add_scale(ax7l, bounds)
 ax7l.set_title('(a) 全域有效像元空间分布', fontsize=11, fontweight='bold', pad=8)
 
 # ---- 右图：10指标完整性热力图 ----
@@ -779,11 +850,6 @@ ax7r.set_title('(b) 10项指标数据完整性与统计特征', fontsize=11, fon
 # cb7 = plt.colorbar(im7, ax=ax7r, shrink=0.8, pad=0.03)
 # cb7.set_label('列内归一化值', fontsize=9)
 # cb7.outline.set_linewidth(0.6)
-
-# 添加圆形图例 (定义 5 个等级的代表颜色)
-wl_colors = plt.get_cmap('RdPu')(np.linspace(0.2, 1.0, 5))
-wl_labels = ['极低密度', '低密度', '中密度', '高密度', '极高密度']
-add_circle_legend(ax4, wl_colors, wl_labels, "积水点核密度等级", loc='lower right')
 
 # 加网格线
 for i in range(len(df_stat) + 1):
